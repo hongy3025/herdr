@@ -337,6 +337,12 @@ impl App {
                 .focused_pane_id()
                 .is_some_and(|focused| focused == pane_id);
         let presentation = terminal.effective_presentation();
+        let status_message = crate::api::schema::common::normalize_status_message(
+            terminal
+                .hook_authority
+                .as_ref()
+                .and_then(|authority| authority.message.as_deref()),
+        );
         Some(crate::api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             terminal_id: terminal.id.to_string(),
@@ -358,6 +364,7 @@ impl App {
             display_agent: presentation.display_agent,
             agent_status: pane_agent_status(terminal.state, pane.seen),
             state_labels: presentation.state_labels,
+            status_message,
             tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),
             scroll: None,

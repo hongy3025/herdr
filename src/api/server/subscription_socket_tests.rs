@@ -233,6 +233,7 @@ fn reply_to_probe(request: ApiRequestMessage) {
                 display_agent: None,
                 agent_status: AgentStatus::Working,
                 state_labels: Default::default(),
+                status_message: None,
                 tokens: Default::default(),
                 agent_session: None,
                 scroll: None,

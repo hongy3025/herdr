@@ -255,3 +255,63 @@ pub enum AgentStatus {
 pub(crate) fn default_true() -> bool {
     true
 }
+
+/// Maximum characters of agent status text exposed through the API and sidebar.
+pub(crate) const MAX_STATUS_MESSAGE_CHARS: usize = 200;
+
+/// Collapse reported agent text into one printable line.
+///
+/// Hook messages come from agent integrations and are rendered by clients, so
+/// control characters and line breaks never reach a status surface.
+pub(crate) fn normalize_status_message(raw: Option<&str>) -> Option<String> {
+    let raw = raw?;
+    let mut text = String::with_capacity(raw.len());
+    let mut pending_space = false;
+    for ch in raw.chars() {
+        if ch.is_control() || ch.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && !text.is_empty() {
+            text.push(' ');
+        }
+        pending_space = false;
+        text.push(ch);
+    }
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() > MAX_STATUS_MESSAGE_CHARS {
+        let mut truncated: String = text.chars().take(MAX_STATUS_MESSAGE_CHARS).collect();
+        truncated.push('…');
+        return Some(truncated);
+    }
+    Some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_status_message;
+
+    #[test]
+    fn status_messages_collapse_to_one_line() {
+        assert_eq!(
+            normalize_status_message(Some("  Run\ntests\t now  ")).as_deref(),
+            Some("Run tests now")
+        );
+        assert_eq!(normalize_status_message(Some(" \n\t ")), None);
+        assert_eq!(normalize_status_message(None), None);
+    }
+
+    #[test]
+    fn long_status_messages_are_capped() {
+        let long = "word ".repeat(100);
+        let normalized = normalize_status_message(Some(&long)).unwrap();
+
+        assert_eq!(
+            normalized.chars().count(),
+            super::MAX_STATUS_MESSAGE_CHARS + 1
+        );
+        assert!(normalized.ends_with('…'));
+    }
+}

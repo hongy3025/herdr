@@ -592,6 +592,108 @@ test("Oh My Pi keeps working when a turn ends with a scheduled continuation", as
   expect(requestStates(requests)).toEqual(["idle", "working", "idle"]);
 });
 
+test("Oh My Pi reports working intents and a completion preview", async () => {
+  const requests = await startRecordingServer("omp-status-message");
+  process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
+  const { handlers, pi } = createExtensionHarness();
+
+  const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+  install(pi);
+
+  let idle = true;
+  const context = {
+    hasUI: true,
+    isIdle: () => idle,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestMessages(requests).length === 1);
+
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  await waitFor(() => requestMessages(requests).length === 2);
+  expect(requestMessages(requests)[1]).toBe("Working…");
+
+  handlers.get("tool_execution_start")?.({ toolName: "bash", intent: "Run the test suite" }, context);
+  await waitFor(() => requestMessages(requests).length === 3);
+  expect(requestMessages(requests)[2]).toBe("Run the test suite");
+
+  idle = true;
+  handlers.get("agent_end")?.(
+    {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "fix the bug" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "internal reasoning" },
+            { type: "text", text: "Fixed the parser\nand added a regression test." },
+          ],
+        },
+        { role: "toolResult", content: [{ type: "text", text: "tool output" }] },
+      ],
+    },
+    context,
+  );
+  await waitFor(() => requestMessages(requests).length === 4);
+  expect(requestMessages(requests)[3]).toBe(
+    "Fixed the parser and added a regression test.",
+  );
+
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  await waitFor(() => requestMessages(requests).length === 5);
+  expect(requestMessages(requests)[4]).toBe("Working…");
+});
+
+test("Oh My Pi caps long completion previews to one line", async () => {
+  const requests = await startRecordingServer("omp-status-message-cap");
+  process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
+  const { handlers, pi } = createExtensionHarness();
+
+  const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+  install(pi);
+
+  let idle = true;
+  const context = {
+    hasUI: true,
+    isIdle: () => idle,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestMessages(requests).length === 1);
+
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  await waitFor(() => requestMessages(requests).length === 2);
+
+  idle = true;
+  handlers.get("agent_end")?.(
+    {
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "word ".repeat(200) }],
+        },
+      ],
+    },
+    context,
+  );
+  await waitFor(() => requestMessages(requests).length === 3);
+
+  const preview = requestMessages(requests)[2];
+  expect(typeof preview).toBe("string");
+  expect(String(preview)).not.toContain("\n");
+  expect(String(preview).length).toBeLessThanOrEqual(202);
+  expect(String(preview).endsWith("…")).toBe(true);
+});
+
 test("Pi retries working state after an unanswered socket attempt", async () => {
   const { attemptedRequests, deliveredRequests, connectionCount } =
     await startDroppedFirstResponseServer("pi-retry");
@@ -677,6 +779,12 @@ function requestSessionPath(request: unknown): unknown {
     return undefined;
   }
   return request.params.agent_session_path;
+}
+
+function requestMessages(requests: unknown[]): unknown[] {
+  return requests
+    .filter((request) => isRecord(request) && request.method === "pane.report_agent")
+    .map((request) => (isRecord(request) && isRecord(request.params) ? request.params.message : undefined));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

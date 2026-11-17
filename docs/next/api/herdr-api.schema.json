@@ -686,6 +686,13 @@
                   },
                   "type": "object"
                 },
+                "status_message": {
+                  "description": "One-line agent status text reported by the agent integration.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "title": {
                   "type": [
                     "string",
@@ -834,6 +841,13 @@
                 "type": "string"
               },
               "type": "object"
+            },
+            "status_message": {
+              "description": "One-line status text reported by the agent integration.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "tab_id": {
               "type": "string"
@@ -6363,6 +6377,13 @@
               },
               "type": "object"
             },
+            "status_message": {
+              "description": "One-line agent status text reported by the agent integration.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "title": {
               "type": [
                 "string",
@@ -6625,6 +6646,13 @@
                 "type": "string"
               },
               "type": "object"
+            },
+            "status_message": {
+              "description": "One-line agent status text reported by the agent integration.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "tab_id": {
               "type": "string"
@@ -7399,6 +7427,13 @@
                   },
                   "type": "object"
                 },
+                "status_message": {
+                  "description": "One-line agent status text reported by the agent integration.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "title": {
                   "type": [
                     "string",
@@ -7942,6 +7977,13 @@
                 "type": "string"
               },
               "type": "object"
+            },
+            "status_message": {
+              "description": "One-line status text reported by the agent integration.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "tab_id": {
               "type": "string"

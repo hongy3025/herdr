@@ -390,6 +390,12 @@ impl App {
             agent_status: pane.agent_status,
             screen_detection_skipped: terminal.full_lifecycle_hook_authority_active(),
             state_labels: pane.state_labels,
+            status_message: crate::api::schema::common::normalize_status_message(
+                terminal
+                    .hook_authority
+                    .as_ref()
+                    .and_then(|authority| authority.message.as_deref()),
+            ),
             tokens: pane.tokens,
             agent_session: pane.agent_session,
             workspace_id: pane.workspace_id,

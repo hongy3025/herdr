@@ -221,6 +221,7 @@ impl ActiveSubscription {
                         title: probe.title,
                         display_agent: probe.display_agent,
                         state_labels: probe.state_labels,
+                        status_message: probe.status_message,
                     });
 
                 Ok(Self::AgentStatusChanged(Box::new(
@@ -433,6 +434,7 @@ impl ActiveAgentStatusChangedSubscription {
             title,
             display_agent,
             state_labels,
+            status_message,
         } = event.data
         else {
             return None;
@@ -464,6 +466,7 @@ impl ActiveAgentStatusChangedSubscription {
                 title,
                 display_agent,
                 state_labels,
+                status_message,
             }),
         })
     }
@@ -533,6 +536,7 @@ impl ActiveAgentStatusChangedSubscription {
                 title: pane.title,
                 display_agent: pane.display_agent,
                 state_labels: pane.state_labels,
+                status_message: pane.status_message,
             }),
         })
     }
@@ -679,6 +683,7 @@ mod tests {
                 title: title.map(str::to_string),
                 display_agent: None,
                 state_labels: HashMap::new(),
+                status_message: None,
             },
         }
     }
@@ -710,6 +715,7 @@ mod tests {
             display_agent: None,
             agent_status: AgentStatus::Unknown,
             state_labels: HashMap::new(),
+            status_message: None,
             tokens: HashMap::new(),
             agent_session: None,
             scroll,
@@ -820,6 +826,7 @@ mod tests {
                         title: Some("stale initial snapshot".into()),
                         display_agent: None,
                         state_labels: HashMap::new(),
+                        status_message: None,
                     }),
                     request_prefix: "batch".into(),
                 },
@@ -951,6 +958,7 @@ mod tests {
                 title: None,
                 display_agent: None,
                 state_labels: HashMap::new(),
+                status_message: None,
             }),
             request_prefix: "test".into(),
         };
@@ -996,6 +1004,7 @@ mod tests {
                 title: Some("short lived".into()),
                 display_agent: None,
                 state_labels: HashMap::new(),
+                status_message: None,
             }),
             request_prefix: "test".into(),
         };

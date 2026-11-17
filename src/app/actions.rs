@@ -177,6 +177,9 @@ pub struct PaneStateUpdate {
     pub state: AgentState,
     pub seen: bool,
     pub presentation: crate::terminal::EffectivePresentation,
+    /// One-line status text reported by the agent integration.
+    pub status_message: Option<String>,
+    pub status_message_changed: bool,
     pub agent_name_changed: bool,
     pub agent_released: bool,
     pub agent_release_status: Option<crate::api::schema::AgentStatus>,
@@ -305,6 +308,14 @@ impl AppState {
                     .terminals
                     .get_mut(&terminal_id)?
                     .expire_agent_metadata_at(scheduled_deadline, now)?;
+                let status_message = self.terminals.get(&terminal_id).and_then(|terminal| {
+                    crate::api::schema::common::normalize_status_message(
+                        terminal
+                            .hook_authority
+                            .as_ref()
+                            .and_then(|authority| authority.message.as_deref()),
+                    )
+                });
                 let change = mutation.effective_state_change?;
                 let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, false)?;
                 let update = PaneStateUpdate {
@@ -320,6 +331,8 @@ impl AppState {
                     state: change.state,
                     seen,
                     presentation: change.presentation.clone(),
+                    status_message,
+                    status_message_changed: false,
                     agent_name_changed: false,
                     agent_released: false,
                     agent_release_status: None,
@@ -1705,9 +1718,17 @@ impl AppState {
             unchanged_change,
             suppress_acquisition_completion,
             completion_reset,
+            status_message,
+            status_message_changed,
         ) = {
             let terminal = self.terminals.get_mut(&terminal_id)?;
             let previous_agent_name = terminal.agent_name.clone();
+            let previous_status_message = crate::api::schema::common::normalize_status_message(
+                terminal
+                    .hook_authority
+                    .as_ref()
+                    .and_then(|authority| authority.message.as_deref()),
+            );
             let had_completion = terminal.last_agent_completion_seq.is_some() || !previous_seen;
             let resume_revision = terminal.reported_resume_revision();
             let mutation = update(terminal);
@@ -1728,8 +1749,16 @@ impl AppState {
             let managed_changed = terminal.reconcile_managed_agent_at(now, false);
             let suppress_acquisition_completion = terminal.finish_agent_process_acquisition();
             let agent_name_changed = terminal.agent_name != previous_agent_name;
+            let status_message = crate::api::schema::common::normalize_status_message(
+                terminal
+                    .hook_authority
+                    .as_ref()
+                    .and_then(|authority| authority.message.as_deref()),
+            );
+            let status_message_changed = status_message != previous_status_message;
             let unchanged_change = (mutation.agent_released
                 || agent_name_changed
+                || status_message_changed
                 || (completion_reset && had_completion))
                 .then(|| terminal.unchanged_effective_state_change_at(now));
             (
@@ -1739,6 +1768,8 @@ impl AppState {
                 unchanged_change,
                 suppress_acquisition_completion,
                 completion_reset,
+                status_message,
+                status_message_changed,
             )
         };
         if completion_reset {
@@ -1783,6 +1814,8 @@ impl AppState {
             state: change.state,
             seen,
             presentation: change.presentation.clone(),
+            status_message,
+            status_message_changed,
             agent_name_changed,
             agent_released,
             agent_release_status: agent_released.then(|| pane_agent_status(change.state, seen)),
@@ -3704,6 +3737,42 @@ mod tests {
             seq: Some(2),
         });
         assert!(state.terminals[&terminal_id].reported_resume().is_none());
+    }
+
+    #[test]
+    fn status_message_only_updates_still_publish_pane_state() {
+        let mut state = app_with_workspaces(&["one"]);
+        let (pane_id, _terminal_id) = first_pane_terminal(&state);
+        let report = |message: Option<&str>, seq: u64| AppEvent::HookStateReported {
+            pane_id,
+            source: "prime-agent".into(),
+            agent_label: "prime-agent".into(),
+            state: AgentState::Working,
+            message: message.map(str::to_string),
+            seq: Some(seq),
+            session_ref: None,
+        };
+
+        let started = state.handle_app_event(report(Some("Working…"), 1));
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].state, AgentState::Working);
+
+        let updated = state.handle_app_event(report(Some("Run the test suite"), 2));
+        assert_eq!(updated.len(), 1);
+        assert_eq!(
+            updated[0].status_message.as_deref(),
+            Some("Run the test suite")
+        );
+        assert!(updated[0].status_message_changed);
+        assert_eq!(updated[0].state, AgentState::Working);
+
+        let repeated = state.handle_app_event(report(Some("Run the test suite"), 3));
+        assert!(repeated.is_empty());
+
+        let cleared = state.handle_app_event(report(None, 4));
+        assert_eq!(cleared.len(), 1);
+        assert!(cleared[0].status_message.is_none());
+        assert!(cleared[0].status_message_changed);
     }
 
     #[test]

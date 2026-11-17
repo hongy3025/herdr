@@ -1083,6 +1083,10 @@ pub struct ClientShellAgent {
     pub state_labels: Vec<(String, String)>,
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
+    /// Client-local one-line status text. It travels through the optional
+    /// `endpoint.agent-status-messages.v1` companion, never this codec.
+    #[serde(skip)]
+    pub status_message: Option<String>,
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.

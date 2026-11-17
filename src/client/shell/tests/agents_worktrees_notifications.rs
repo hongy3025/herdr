@@ -582,6 +582,7 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: true,
+            status_message: None,
         },
         ClientShellAgent {
             pane_id: "pane_2".into(),
@@ -598,6 +599,7 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: false,
+            status_message: None,
         },
     ];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -672,6 +674,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
             state_labels: Vec::new(),
             tokens: vec![("summary".into(), "review complete".into())],
             focused: true,
+            status_message: None,
         },
         ClientShellAgent {
             pane_id: "pane_2".into(),
@@ -688,6 +691,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
             state_labels: vec![("blocked".into(), "needs input".into())],
             tokens: vec![("summary".into(), "waiting for Can".into())],
             focused: false,
+            status_message: None,
         },
     ];
     let mut config = Config::default();
@@ -811,6 +815,7 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: true,
+        status_message: None,
     }];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(projected));
@@ -853,6 +858,58 @@ fn workspace_state_text_does_not_stack_terminal_faint() {
 }
 
 #[test]
+fn agent_sidebar_status_message_adds_one_dim_line() {
+    let render = |message: Option<&str>| {
+        let mut projected = snapshot();
+        projected.agents = vec![ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("reviewer".into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Working,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: true,
+            status_message: None,
+        }];
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        if let Some(message) = message {
+            let boot_id = projected.boot_id.clone();
+            let revision = projected.revision;
+            state.endpoints[0]
+                .agent_presentation
+                .receive_status_messages(
+                    None,
+                    crate::protocol::endpoint::EndpointAgentStatusMessages {
+                        boot_id,
+                        revision,
+                        messages: [("pane_1".into(), message.to_string())]
+                            .into_iter()
+                            .collect(),
+                    },
+                );
+        }
+        state.set_snapshot(Box::new(projected));
+        state.set_pane_surface(surface());
+        let frame = state.compose(106, 30).expect("agent sidebar frame");
+        let row = state.hits.agents.first().expect("agent row hit").0;
+        (frame, row)
+    };
+
+    let (_frame, plain_row) = render(None);
+    let (frame, message_row) = render(Some("Run\nthe \u{1b}test suite"));
+
+    assert_eq!(message_row.height, plain_row.height + 1);
+    cell_symbol_position(&frame, message_row, "Run the test suite");
+}
+
+#[test]
 fn active_agent_view_controls_sidebar_order_and_focus_indices() {
     let mut projected = snapshot();
     let mut second_pane = projected.panes[0].clone();
@@ -878,6 +935,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: true,
+            status_message: None,
         },
         ClientShellAgent {
             pane_id: "pane_2".into(),
@@ -894,6 +952,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: false,
+            status_message: None,
         },
         ClientShellAgent {
             pane_id: "pane_3".into(),
@@ -910,6 +969,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: false,
+            status_message: None,
         },
     ];
     projected.agent_view_label = Some("review".into());
@@ -984,6 +1044,7 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: true,
+        status_message: None,
     });
     let config =
         ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone());
@@ -1549,6 +1610,7 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: false,
+        status_message: None,
     });
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());

@@ -15,6 +15,14 @@ pub(super) struct AgentRow {
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    /// One-line agent status text rendered below the configured rows.
+    pub(super) status_message: Option<String>,
+}
+
+impl AgentRow {
+    pub(super) fn line_count(&self) -> usize {
+        self.rows.len() + usize::from(self.status_message.is_some())
+    }
 }
 
 pub(super) fn ordered_agent_pane_ids(
@@ -79,7 +87,7 @@ pub(super) fn render_agent_panel(
         config,
         agent_scroll,
         hits,
-        |row| row.rows.len(),
+        |row| row.line_count(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
             render_agent_row(buffer, rect, row, config);
@@ -315,6 +323,9 @@ pub(super) fn agent_row(
         status: agent.agent_status,
         focused: agent.focused,
         rows,
+        status_message: crate::api::schema::common::normalize_status_message(
+            agent.status_message.as_deref(),
+        ),
     })
 }
 
@@ -368,6 +379,24 @@ pub(super) fn render_agent_row(
         ));
         Paragraph::new(Line::from(spans)).style(row_style).render(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
+            buffer,
+        );
+    }
+    if let Some(message) = row
+        .status_message
+        .as_deref()
+        .filter(|_| rows.len() < rect.height as usize)
+    {
+        let indent = 3.min(rect.width as usize);
+        let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
+        spans.push(ratatui::text::Span::styled(
+            message,
+            Style::default()
+                .fg(palette.overlay1)
+                .add_modifier(Modifier::DIM),
+        ));
+        Paragraph::new(Line::from(spans)).style(row_style).render(
+            Rect::new(rect.x, rect.y + rows.len() as u16, rect.width, 1),
             buffer,
         );
     }

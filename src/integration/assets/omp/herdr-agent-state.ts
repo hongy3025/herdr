@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=omp
-// HERDR_INTEGRATION_VERSION=10
+// HERDR_INTEGRATION_VERSION=11
 // @ts-nocheck
 
 import net from "node:net";
@@ -242,6 +242,41 @@ function askBlockedMessage(args: any): string {
   return "waiting for user input";
 }
 
+// Matches OMP's own working-row intent normalization, so the reported text and
+// the pane's working row describe the same action.
+function workingIntent(intent: unknown): string | undefined {
+  if (typeof intent !== "string") {
+    return undefined;
+  }
+  return (
+    intent
+      .trim()
+      .replace(/\s*\.+$/, "")
+      .trim() || undefined
+  );
+}
+
+const COMPLETION_PREVIEW_LIMIT = 200;
+
+// Assistant text only: thinking, tool calls, and tool results never become the
+// sidebar preview.
+function completionPreview(messages: unknown[]): string | undefined {
+  const assistant = lastAssistantMessage(messages);
+  const content = Array.isArray(assistant?.content) ? assistant.content : [];
+  const text = content
+    .filter((block: any) => block?.type === "text" && typeof block.text === "string")
+    .map((block: any) => block.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) {
+    return undefined;
+  }
+  return text.length > COMPLETION_PREVIEW_LIMIT
+    ? `${text.slice(0, COMPLETION_PREVIEW_LIMIT)}…`
+    : text;
+}
+
 export default function (pi) {
   if (!enabled()) {
     return;
@@ -255,6 +290,8 @@ export default function (pi) {
   let blockedMessage: string | undefined;
   let lastState: AgentState | undefined;
   let lastMessage: string | undefined;
+  let workingMessage: string | undefined;
+  let completionMessage: string | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let rootSession = false;
@@ -286,9 +323,9 @@ export default function (pi) {
       return { state: "blocked" as const, message: failureMessage };
     }
     if (agentActive || retryHoldActive) {
-      return { state: "working" as const, message: undefined };
+      return { state: "working" as const, message: workingMessage };
     }
-    return { state: "idle" as const, message: undefined };
+    return { state: "idle" as const, message: completionMessage };
   }
 
   function publishState(force = false) {
@@ -343,6 +380,8 @@ export default function (pi) {
     agentActive = false;
     blockedCount = 0;
     blockedMessage = undefined;
+    workingMessage = undefined;
+    completionMessage = undefined;
   }
 
   function activateBlocked(message: string | undefined) {
@@ -398,6 +437,8 @@ export default function (pi) {
     clearPendingTimers();
     clearFailureState();
     agentActive = true;
+    workingMessage = "Working…";
+    completionMessage = undefined;
     publishState();
   });
 
@@ -418,6 +459,15 @@ export default function (pi) {
 
   pi.on("tool_execution_start", (event, ctx) => {
     if (event?.toolName !== "ask") {
+      if (!rootSession) {
+        return;
+      }
+      const intent = workingIntent(event?.intent);
+      if (intent === undefined || intent === workingMessage) {
+        return;
+      }
+      workingMessage = intent;
+      publishState();
       return;
     }
     if (!rootSession && !activateRootSession(ctx)) {
@@ -453,6 +503,7 @@ export default function (pi) {
     }
 
     agentActive = false;
+    completionMessage = completionPreview(Array.isArray(event?.messages) ? event.messages : []);
 
     const retryableMessage = retryableErrorMessage(event);
     if (retryableMessage) {
