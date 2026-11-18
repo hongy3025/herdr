@@ -12,6 +12,7 @@ use super::*;
 
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
+    pub(super) workspace_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
@@ -62,6 +63,7 @@ pub(super) fn render_agent_panel(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    selected: Option<&super::WorkspaceNavigationTarget>,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
@@ -90,7 +92,9 @@ pub(super) fn render_agent_panel(
         |row| row.line_count(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
+            let related = selected
+                .is_some_and(|target| target.matches(&ClientEndpointId::Local, &row.workspace_id));
+            render_agent_row(buffer, rect, row, config, related);
         },
     );
 }
@@ -320,6 +324,7 @@ pub(super) fn agent_row(
     );
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
+        workspace_id: agent.workspace_id.clone(),
         status: agent.agent_status,
         focused: agent.focused,
         rows,
@@ -334,10 +339,13 @@ pub(super) fn render_agent_row(
     rect: Rect,
     row: &AgentRow,
     config: &ClientShellConfig,
+    related: bool,
 ) {
     let palette = &config.palette;
     let row_style = if row.focused {
         Style::default().bg(palette.active_row_bg)
+    } else if related {
+        Style::default().bg(palette.surface1)
     } else {
         Style::default()
     };

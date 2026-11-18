@@ -394,10 +394,8 @@ mod tests {
         let mut presentation = EndpointAgentPresentation::default();
         let mut baseline = snapshot(AgentStatus::Working, 0, 1);
         presentation.project_snapshot_for_generation(&mut baseline, Some(1));
-        presentation.receive_status_messages(
-            Some(2),
-            status_messages("endpoint-boot", 2, Some("stale")),
-        );
+        presentation
+            .receive_status_messages(Some(2), status_messages("endpoint-boot", 2, Some("stale")));
         let mut next = snapshot(AgentStatus::Working, 1, 2);
         presentation.project_snapshot_for_generation(&mut next, Some(1));
 

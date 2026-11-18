@@ -85,6 +85,8 @@ pub(super) enum ClientMobileTarget {
 pub(super) struct ShellHitMap {
     pub(super) machines: Vec<MachineHit>,
     pub(super) workspaces: Vec<WorkspaceHit>,
+    pub(super) workspace_pane_dots: Vec<(Rect, ClientEndpointId, String)>,
+    pub(super) workspace_tab_badges: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) workspace_body: Rect,
     pub(super) workspace_scrollbar: Rect,
     pub(super) workspace_scroll_metrics: Option<crate::pane::ScrollMetrics>,

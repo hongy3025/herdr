@@ -909,6 +909,272 @@ fn agent_sidebar_status_message_adds_one_dim_line() {
     cell_symbol_position(&frame, message_row, "Run the test suite");
 }
 
+fn space_agent_snapshot() -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    projected.tabs.push(ClientShellTab {
+        tab_id: "tab_2".into(),
+        workspace_id: "ws_1".into(),
+        number: 2,
+        label: "2".into(),
+        custom_label: false,
+        zoomed: false,
+        focused: false,
+        agent_status: AgentStatus::Idle,
+    });
+    projected.panes = vec![
+        ClientShellPane {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            label: None,
+            cwd: Some("/repo".into()),
+            foreground_cwd: Some("/repo".into()),
+            focused: true,
+            right_click_passthrough: false,
+        },
+        ClientShellPane {
+            pane_id: "pane_2".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            label: None,
+            cwd: Some("/repo".into()),
+            foreground_cwd: Some("/repo".into()),
+            focused: false,
+            right_click_passthrough: false,
+        },
+        ClientShellPane {
+            pane_id: "pane_3".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            label: None,
+            cwd: Some("/repo".into()),
+            foreground_cwd: Some("/repo".into()),
+            focused: false,
+            right_click_passthrough: false,
+        },
+    ];
+    projected.agents = vec![
+        space_agent("pane_1", AgentStatus::Working, Some("Run tests"), "codex"),
+        space_agent("pane_2", AgentStatus::Blocked, None, "omp"),
+    ];
+    projected
+}
+
+fn space_agent(
+    pane_id: &str,
+    status: AgentStatus,
+    message: Option<&str>,
+    name: &str,
+) -> ClientShellAgent {
+    ClientShellAgent {
+        pane_id: pane_id.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: None,
+        display_agent: Some(name.into()),
+        agent: Some("omp".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: status,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+        status_message: message.map(str::to_string),
+    }
+}
+
+fn send_space_status_messages(
+    state: &mut ClientShellState,
+    boot_id: String,
+    revision: u64,
+    messages: &[(&str, &str)],
+) {
+    state.endpoints[0]
+        .agent_presentation
+        .receive_status_messages(
+            None,
+            crate::protocol::endpoint::EndpointAgentStatusMessages {
+                boot_id,
+                revision,
+                messages: messages
+                    .iter()
+                    .map(|(pane, message)| (pane.to_string(), message.to_string()))
+                    .collect(),
+            },
+        );
+}
+
+#[test]
+fn space_row_shows_winning_status_text_and_pane_widgets() {
+    let projected = space_agent_snapshot();
+    let (boot_id, revision) = (projected.boot_id.clone(), projected.revision);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    send_space_status_messages(
+        &mut state,
+        boot_id,
+        revision,
+        &[("pane_1", "Run tests"), ("pane_2", "Need approval")],
+    );
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("sidebar frame");
+    let rect = state.hits.workspaces.first().expect("workspace row").rect;
+
+    assert_eq!(rect.height, 3);
+    cell_symbol_position(&frame, rect, "omp · Need approval");
+    assert_eq!(state.hits.workspace_pane_dots.len(), 3);
+    assert!(state.hits.workspace_tab_badges.len() == 1);
+    cell_symbol_position(&frame, rect, "×");
+    cell_symbol_position(&frame, rect, "◐");
+}
+
+#[test]
+fn space_row_hides_status_text_for_idle_winners_and_disabled_config() {
+    let mut projected = space_agent_snapshot();
+    projected.agents = vec![space_agent(
+        "pane_1",
+        AgentStatus::Idle,
+        Some("Done earlier"),
+        "omp",
+    )];
+    let (boot_id, revision) = (projected.boot_id.clone(), projected.revision);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    send_space_status_messages(&mut state, boot_id, revision, &[("pane_1", "Done earlier")]);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("sidebar frame");
+    assert_eq!(state.hits.workspaces[0].rect.height, 2);
+
+    let mut config = Config::default();
+    config.ui.sidebar.spaces.status_text = false;
+    let projected = space_agent_snapshot();
+    let (boot_id, revision) = (projected.boot_id.clone(), projected.revision);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    send_space_status_messages(
+        &mut state,
+        boot_id,
+        revision,
+        &[("pane_2", "Need approval")],
+    );
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("sidebar frame");
+    assert_eq!(state.hits.workspaces[0].rect.height, 2);
+}
+
+#[test]
+fn space_row_single_pane_has_no_strip_or_badge() {
+    let mut projected = snapshot();
+    projected.agents = vec![space_agent(
+        "pane_1",
+        AgentStatus::Working,
+        Some("Run tests"),
+        "codex",
+    )];
+    let (boot_id, revision) = (projected.boot_id.clone(), projected.revision);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    send_space_status_messages(&mut state, boot_id, revision, &[("pane_1", "Run tests")]);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("sidebar frame");
+    let rect = state.hits.workspaces.first().expect("workspace row").rect;
+
+    assert_eq!(rect.height, 3);
+    assert!(state.hits.workspace_pane_dots.is_empty());
+    assert!(state.hits.workspace_tab_badges.is_empty());
+    cell_symbol_position(&frame, rect, "Run tests");
+}
+
+fn click_space_widget(state: &mut ClientShellState, column: u16, row: u16) -> ClientShellInput {
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        },
+    )])
+}
+
+#[test]
+fn space_pane_dot_click_focuses_that_pane() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(space_agent_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("sidebar frame");
+    let (rect, _, pane_id) = state.hits.workspace_pane_dots[1].clone();
+
+    let input = click_space_widget(&mut state, rect.x, rect.y);
+
+    assert!(matches!(
+        &input.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == pane_id)
+    ));
+}
+
+#[test]
+fn space_tab_badge_click_cycles_workspace_tabs() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(space_agent_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("sidebar frame");
+    let (rect, _, _) = state.hits.workspace_tab_badges[0].clone();
+
+    let input = click_space_widget(&mut state, rect.x, rect.y);
+
+    assert!(matches!(
+        &input.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(&request.method, crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_2")
+    ));
+}
+
+#[test]
+fn selected_space_highlights_its_agent_rows() {
+    let mut config = Config::default();
+    config.ui.sidebar_width = 30;
+    let shell_config = ClientShellConfig::from_config(&config);
+    let (surface1, active_bg) = (
+        crate::protocol::color_to_u32(shell_config.palette.surface1),
+        crate::protocol::color_to_u32(shell_config.palette.active_row_bg),
+    );
+    let mut projected = space_agent_snapshot();
+    projected.agents[0].focused = true;
+    let mut state = ClientShellState::new(shell_config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let before = state.compose(106, 30).expect("sidebar frame");
+    let agent_rects = state
+        .hits
+        .agents
+        .iter()
+        .map(|(rect, _)| *rect)
+        .collect::<Vec<_>>();
+    let focused_index =
+        agent_rects[0].y as usize * before.width as usize + agent_rects[0].x as usize + 1;
+    let related_index =
+        agent_rects[1].y as usize * before.width as usize + agent_rects[1].x as usize + 1;
+    assert_ne!(before.cells[related_index].bg, surface1);
+
+    state.mode = ClientShellMode::Navigate;
+    state.navigate_workspace_id = state.navigation_target(&ClientEndpointId::Local, "ws_1");
+    let after = state.compose(106, 30).expect("sidebar frame");
+
+    assert_eq!(
+        after.cells[focused_index].bg, active_bg,
+        "focused agent keeps the focused background"
+    );
+    assert_eq!(
+        after.cells[related_index].bg, surface1,
+        "related agent rows take the linkage background"
+    );
+}
+
 #[test]
 fn active_agent_view_controls_sidebar_order_and_focus_indices() {
     let mut projected = snapshot();

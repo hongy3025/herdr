@@ -4,6 +4,52 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
+/// Mouse targets rendered inside a Space row beyond the workspace itself.
+#[derive(Default)]
+pub(in crate::client::shell) struct SpaceRowWidgets {
+    pub pane_dots: Vec<(Rect, String)>,
+    pub tab_badge: Option<(Rect, String)>,
+}
+
+/// One-line agent status text for a Space row, when the winning agent is
+/// blocked, done, or working.
+pub(in crate::client::shell) fn space_status_line(
+    summary: Option<&super::workspace_summary::WorkspaceAgentSummary>,
+    config: &crate::config::SpacesSidebarConfig,
+) -> Option<(String, crate::api::schema::AgentStatus)> {
+    use crate::api::schema::AgentStatus;
+    if !config.status_text {
+        return None;
+    }
+    let summary = summary?;
+    let winner = summary.winner.as_ref()?;
+    if !matches!(
+        winner.status,
+        AgentStatus::Blocked | AgentStatus::Done | AgentStatus::Working
+    ) {
+        return None;
+    }
+    let text = winner
+        .text
+        .clone()
+        .unwrap_or_else(|| status_text(winner.status).to_string());
+    let line = if summary.agent_count >= 2 {
+        format!("{} · {text}", winner.label)
+    } else {
+        text
+    };
+    Some((line, winner.status))
+}
+
+pub(in crate::client::shell) fn space_row_height(
+    rows: &[Vec<crate::ui::ResolvedToken>],
+    summary: Option<&super::workspace_summary::WorkspaceAgentSummary>,
+    config: &crate::config::SpacesSidebarConfig,
+) -> u16 {
+    let lines = rows.len() + usize::from(space_status_line(summary, config).is_some());
+    lines.max(1).min(u16::MAX as usize) as u16
+}
+
 fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
     if palette.selection_bg == ratatui::style::Color::Reset {
         palette.active_row_bg
@@ -227,6 +273,7 @@ pub(crate) fn render_sidebar(
     );
 
     let entries = workspace_entries(snapshot, state.collapsed_groups);
+    let summaries = super::workspace_summary::workspace_summaries(snapshot);
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -243,15 +290,17 @@ pub(crate) fn render_sidebar(
                 .workspaces
                 .get(entry.index)
                 .map(|workspace| {
-                    workspace_rows(
+                    let rows = workspace_rows(
                         workspace,
                         displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
                         entry.indented,
                         &config.spaces,
+                    );
+                    space_row_height(
+                        &rows,
+                        summaries.get(&workspace.workspace_id),
+                        &config.spaces,
                     )
-                    .len()
-                    .max(1)
-                    .min(u16::MAX as usize) as u16
                 })
                 .unwrap_or(1)
         })
@@ -305,7 +354,13 @@ pub(crate) fn render_sidebar(
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
         let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
-        let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+        let tab_count = snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tab.workspace_id == workspace.workspace_id)
+            .count();
+        let summary = summaries.get(&workspace.workspace_id);
+        let row_height = space_row_height(&rows, summary, &config.spaces).min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
         }
@@ -321,19 +376,37 @@ pub(crate) fn render_sidebar(
         } else if workspace.focused {
             buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
         }
+        let mut widgets = SpaceRowWidgets::default();
         render_workspace_rows(
             buffer,
             rect,
-            status,
-            config.status_indicators,
-            entry,
-            rows,
-            workspace.focused,
-            selected,
-            state.selected_workspace_id.is_some(),
-            dragged,
-            palette,
+            SpaceRowRender {
+                status,
+                indicators: config.status_indicators,
+                entry,
+                rows,
+                focused: workspace.focused,
+                selected,
+                navigating: state.selected_workspace_id.is_some(),
+                dragged,
+                palette,
+                spaces: &config.spaces,
+                workspace_id: &workspace.workspace_id,
+                tab_count,
+                summary,
+            },
+            &mut widgets,
         );
+        if config.mouse_capture {
+            for (rect, pane_id) in widgets.pane_dots {
+                hits.workspace_pane_dots
+                    .push((rect, ClientEndpointId::Local, pane_id));
+            }
+            if let Some((rect, workspace_id)) = widgets.tab_badge {
+                hits.workspace_tab_badges
+                    .push((rect, ClientEndpointId::Local, workspace_id));
+            }
+        }
         let group_toggle = render_parent_group_toggle(
             buffer,
             rect,
@@ -435,6 +508,7 @@ pub(crate) fn render_sidebar(
         detail_area,
         snapshot,
         config,
+        state.selected_workspace_id,
         state.agent_scroll,
         hits,
     );
@@ -689,19 +763,52 @@ pub(in crate::client::shell) fn workspace_rows(
     )
 }
 
+pub(in crate::client::shell) struct SpaceRowRender<'a> {
+    pub status: crate::api::schema::AgentStatus,
+    pub indicators: crate::config::StatusIndicatorStyle,
+    pub entry: &'a WorkspaceEntry,
+    pub rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    pub focused: bool,
+    pub selected: bool,
+    pub navigating: bool,
+    pub dragged: bool,
+    pub palette: &'a Palette,
+    pub spaces: &'a crate::config::SpacesSidebarConfig,
+    pub workspace_id: &'a str,
+    pub tab_count: usize,
+    pub summary: Option<&'a super::workspace_summary::WorkspaceAgentSummary>,
+}
+
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
-    status: crate::api::schema::AgentStatus,
-    indicators: crate::config::StatusIndicatorStyle,
-    entry: &WorkspaceEntry,
-    rows: Vec<Vec<crate::ui::ResolvedToken>>,
-    focused: bool,
-    selected: bool,
-    navigating: bool,
-    dragged: bool,
-    palette: &Palette,
+    row: SpaceRowRender<'_>,
+    widgets: &mut SpaceRowWidgets,
 ) {
+    let SpaceRowRender {
+        status,
+        indicators,
+        entry,
+        rows,
+        focused,
+        selected,
+        navigating,
+        dragged,
+        palette,
+        spaces,
+        workspace_id,
+        tab_count,
+        summary,
+    } = row;
+    let dots = summary
+        .filter(|_| spaces.pane_strip)
+        .map(|summary| summary.active_tab_dots.as_slice())
+        .filter(|dots| dots.len() >= 2);
+    let badge = (tab_count >= 2).then(|| tab_count.to_string());
+    let widget_width = badge.as_ref().map_or(0, |badge| {
+        display_width(badge) as usize + usize::from(dots.is_some())
+    }) + dots.map_or(0, |dots| dots.len());
+    let text_right = area.right().saturating_sub(2 + widget_width as u16);
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
         if y >= area.bottom() {
@@ -761,12 +868,80 @@ pub(in crate::client::shell) fn render_workspace_rows(
             secondary_style,
             Style::default().fg(palette.overlay1),
             palette,
-            area.right().saturating_sub(2).saturating_sub(x) as usize,
+            text_right.saturating_sub(x) as usize,
         );
-        Paragraph::new(Line::from(spans)).render(
-            Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
-            buffer,
-        );
+        Paragraph::new(Line::from(spans))
+            .render(Rect::new(x, y, text_right.saturating_sub(x), 1), buffer);
+    }
+
+    if widget_width > 0 {
+        let y = area.y + rows.len().min(2).saturating_sub(1) as u16;
+        let mut x = area.right().saturating_sub(2 + widget_width as u16);
+        if let Some(badge) = badge {
+            let width = display_width(&badge);
+            let color = match summary.and_then(|summary| summary.other_tabs_attention) {
+                Some(crate::api::schema::AgentStatus::Blocked) => palette.red,
+                Some(crate::api::schema::AgentStatus::Done) => palette.teal,
+                _ => palette.overlay0,
+            };
+            put_text(
+                buffer,
+                x,
+                y,
+                width,
+                &badge,
+                Style::default().fg(color).add_modifier(Modifier::DIM),
+            );
+            widgets.tab_badge = Some((Rect::new(x, y, width, 1), workspace_id.to_string()));
+            x = x.saturating_add(width);
+            if dots.is_some() {
+                x = x.saturating_add(1);
+            }
+        }
+        if let Some(dots) = dots {
+            for dot in dots {
+                let dot_status = dot
+                    .status
+                    .unwrap_or(crate::api::schema::AgentStatus::Unknown);
+                let mut style = Style::default().fg(status_color(dot_status, palette));
+                if dot.winner {
+                    style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                }
+                put_text(
+                    buffer,
+                    x,
+                    y,
+                    1,
+                    status_icon(dot_status, crate::config::StatusIndicatorStyle::Symbols),
+                    style,
+                );
+                widgets
+                    .pane_dots
+                    .push((Rect::new(x, y, 1, 1), dot.pane_id.clone()));
+                x = x.saturating_add(1);
+            }
+        }
+    }
+
+    if let Some((text, _)) = space_status_line(summary, spaces) {
+        let y = area.y + rows.len() as u16;
+        if y < area.bottom() {
+            let x = if entry.indented {
+                area.x.saturating_add(8)
+            } else {
+                area.x.saturating_add(3)
+            };
+            put_text(
+                buffer,
+                x,
+                y,
+                area.right().saturating_sub(2).saturating_sub(x),
+                &text,
+                Style::default()
+                    .fg(palette.overlay1)
+                    .add_modifier(Modifier::DIM),
+            );
+        }
     }
 
     let background = if selected {

@@ -48,6 +48,7 @@ pub(super) fn render_expanded(
     agent_view_label: Option<&str>,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
+    selected: Option<&super::WorkspaceNavigationTarget>,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
@@ -72,7 +73,9 @@ pub(super) fn render_expanded(
         hits,
         |row| row.agent.line_count(),
         |buffer, rect, row, hits| {
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
+            let related = selected
+                .is_some_and(|target| target.matches(&row.endpoint_id, &row.agent.workspace_id));
+            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config, related);
             if row.stale {
                 buffer.set_style(
                     rect,

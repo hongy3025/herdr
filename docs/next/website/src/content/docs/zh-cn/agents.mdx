@@ -160,6 +160,8 @@ herdr pane report-metadata w1:p1 \
 
 内置的 Oh My Pi 集成在工作时上报当前工具意图,并在回合结束后上报最终助手回复的摘要预览。
 
+展开后的 Space 行也会汇总其中的面板:当前 tab 每个面板一个状态点,tab 数量徽标按其它 tab 的最高状态着色,并额外显示胜出 agent 的状态文本(优先级为 blocked、done、working)。选中某个 space 会高亮 Agents 面板中属于它的 agent,该面板的排序和交互保持不变。
+
 ## 直接附加到智能体
 
 把当前终端附加到某一个智能体终端,而不是完整的 Herdr UI:
