@@ -158,7 +158,7 @@ Agent sidebar rows can also opt into `terminal_title` or `terminal_title_strippe
 
 `herdr pane report-agent` accepts `--message TEXT` for one line of live status text. The agent sidebar renders it below the configured rows and keeps the state icon and label unchanged. Herdr collapses the text to one printable line, and a later report without `--message` clears it.
 
-The bundled Oh My Pi integration reports the current tool intent while working. When the turn settles, it reports the final assistant reply as the idle status message. The sidebar shows a compact preview; click it to open a scrollable view of the recap, up to 8,192 characters.
+The bundled Oh My Pi integration reports the current tool intent while working and the final assistant reply when the turn settles. If OMP later generates an idle recap, the sidebar status updates to that recap. The sidebar shows a compact preview; click it to open a scrollable view of the message, up to 8,192 characters.
 
 Expanded Space rows use the first line for the directory, git sync counts, a
 tab-count badge, and one status dot per pane across all tabs; changing the

@@ -6,7 +6,10 @@
 // @ts-nocheck
 
 import net from "node:net";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { Database } from "bun:sqlite";
 
 const HERDR_ENV = process.env.HERDR_ENV;
 const socketPath = process.env.HERDR_SOCKET_PATH;
@@ -78,6 +81,7 @@ type QueuedState = {
 
 const idleDebounceMs = parseDurationEnv("HERDR_OMP_IDLE_DEBOUNCE_MS", 250);
 const retryGraceMs = parseDurationEnv("HERDR_OMP_RETRY_GRACE_MS", 2500);
+const recapPollMs = Math.max(10, parseDurationEnv("HERDR_OMP_RECAP_POLL_MS", 2000));
 const retryableErrorPattern =
   /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
 let reportSeq = Date.now() * 1000;
@@ -288,6 +292,37 @@ function completionRecap(messages: unknown[]): string | undefined {
   return text;
 }
 
+// OMP journals idle recaps separately from the conversation, after agent_end.
+// Its extension API does not currently emit an event for them.
+function latestIdleRecap(sessionId: string): { id: number; recap: string } | undefined | null {
+  const profile = process.env.OMP_PROFILE || process.env.PI_PROFILE;
+  const root = path.join(os.homedir(), process.env.PI_CONFIG_DIR || ".omp");
+  const profileRoot = profile && profile !== "default" ? path.join(root, "profiles", profile) : root;
+  const defaultAgentDir = path.join(profileRoot, "agent");
+  const configuredDir = process.env.PI_CODING_AGENT_DIR;
+  let dataDir = configuredDir || defaultAgentDir;
+  if (
+    (process.platform === "linux" || process.platform === "darwin") &&
+    (!configuredDir || path.resolve(configuredDir) === path.resolve(defaultAgentDir)) &&
+    process.env.XDG_DATA_HOME
+  ) {
+    const xdgRoot = path.join(process.env.XDG_DATA_HOME, "omp");
+    const xdgProfile = profile && profile !== "default" ? path.join(xdgRoot, "profiles", profile) : xdgRoot;
+    if (fs.existsSync(xdgProfile)) dataDir = xdgProfile;
+  }
+  let db: Database | undefined;
+  try {
+    db = new Database(path.join(dataDir, "history.db"), { readonly: true, create: false });
+    return db.query(
+      "SELECT id, recap FROM session_recaps WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+    ).get(sessionId) as { id: number; recap: string } | undefined;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
 export default function (pi) {
   if (!enabled()) {
     return;
@@ -305,6 +340,7 @@ export default function (pi) {
   let completionMessage: string | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let recapTimer: ReturnType<typeof setInterval> | undefined;
   let rootSession = false;
 
   function clearTimer(timer: ReturnType<typeof setTimeout> | undefined) {
@@ -318,6 +354,32 @@ export default function (pi) {
     clearTimer(retryTimer);
     idleTimer = undefined;
     retryTimer = undefined;
+  }
+
+  function stopRecapPolling() {
+    if (recapTimer) clearInterval(recapTimer);
+    recapTimer = undefined;
+  }
+
+  function watchIdleRecap() {
+    stopRecapPolling();
+    const sessionId = currentAgentSessionId;
+    if (!sessionId) return;
+    const baseline = latestIdleRecap(sessionId);
+    // Never mistake an older recap for this turn if the database cannot be read.
+    if (baseline === null) return;
+    const lastId = baseline?.id ?? 0;
+    recapTimer = setInterval(() => {
+      if (agentActive || currentAgentSessionId !== sessionId) return;
+      const entry = latestIdleRecap(sessionId);
+      if (!entry || entry.id <= lastId || typeof entry.recap !== "string") return;
+      const message = completionRecap([{ role: "assistant", content: [{ type: "text", text: entry.recap }] }]);
+      if (!message) return;
+      completionMessage = message;
+      publishState();
+      stopRecapPolling();
+    }, recapPollMs);
+    recapTimer.unref?.();
   }
 
   function clearFailureState() {
@@ -387,6 +449,7 @@ export default function (pi) {
 
   function resetSessionState() {
     clearPendingTimers();
+    stopRecapPolling();
     clearFailureState();
     agentActive = false;
     blockedCount = 0;
@@ -444,6 +507,7 @@ export default function (pi) {
       return;
     }
     updateSessionRef(ctx);
+    stopRecapPolling();
     void reportSession();
     clearPendingTimers();
     clearFailureState();
@@ -523,11 +587,13 @@ export default function (pi) {
     }
 
     scheduleIdle();
+    watchIdleRecap();
   });
 
   pi.on("session_shutdown", () => {
     if (rootSession) {
       clearPendingTimers();
+      stopRecapPolling();
     }
   });
 }

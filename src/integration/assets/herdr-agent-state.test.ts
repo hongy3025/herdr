@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { rm } from "node:fs/promises";
+import { Database } from "bun:sqlite";
+import { mkdtemp, rm } from "node:fs/promises";
 import net, { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,8 @@ const originalCreateConnection = net.createConnection;
 const originalEnvironment = {
   HERDR_ENV: process.env.HERDR_ENV,
   HERDR_OMP_IDLE_DEBOUNCE_MS: process.env.HERDR_OMP_IDLE_DEBOUNCE_MS,
+  HERDR_OMP_RECAP_POLL_MS: process.env.HERDR_OMP_RECAP_POLL_MS,
+  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
   HERDR_PANE_ID: process.env.HERDR_PANE_ID,
   HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
   OMPCODE: process.env.OMPCODE,
@@ -647,6 +650,45 @@ test("Oh My Pi reports working intents and a completion preview", async () => {
   handlers.get("agent_start")?.({}, context);
   await waitFor(() => requestMessages(requests).length === 5);
   expect(requestMessages(requests)[4]).toBe("Working…");
+});
+
+test("Oh My Pi replaces the assistant reply with the later idle recap", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "herdr-omp-recap-"));
+  const db = new Database(join(directory, "history.db"));
+  db.run("PRAGMA journal_mode=WAL");
+  db.run("CREATE TABLE session_recaps (id INTEGER PRIMARY KEY, session_id TEXT, recap TEXT)");
+  db.run("INSERT INTO session_recaps VALUES (1, 'session-a', 'old recap')");
+  try {
+    const requests = await startRecordingServer("omp-idle-recap");
+    process.env.PI_CODING_AGENT_DIR = directory;
+    process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
+    process.env.HERDR_OMP_RECAP_POLL_MS = "10";
+    const { handlers, pi } = createExtensionHarness();
+    const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+    install(pi);
+    const context = {
+      hasUI: true,
+      isIdle: () => true,
+      sessionManager: { getSessionFile: () => undefined, getSessionId: () => "session-a" },
+    };
+    handlers.get("session_start")?.({}, context);
+    await waitFor(() => requestMessages(requests).length === 1);
+    handlers.get("agent_start")?.({}, context);
+    await waitFor(() => requestMessages(requests).length === 2);
+    handlers.get("agent_end")?.({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "你好！" }] }],
+    }, context);
+    await waitFor(() => requestMessages(requests).length === 3);
+    expect(requestMessages(requests)[2]).toBe("你好！");
+    db.run("INSERT INTO session_recaps VALUES (2, 'other-session', 'wrong recap')");
+    db.run("INSERT INTO session_recaps VALUES (3, 'session-a', '你目前只打了招呼')");
+    await waitFor(() => requestMessages(requests).length === 4);
+    expect(requestMessages(requests)[3]).toBe("你目前只打了招呼");
+    handlers.get("session_shutdown")?.({}, context);
+  } finally {
+    db.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("Oh My Pi reports the full completion recap as idle status text", async () => {
