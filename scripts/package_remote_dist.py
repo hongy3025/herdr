@@ -166,7 +166,11 @@ def package_dist(
     protocol: int | None = None,
 ) -> Path:
     base_version = read_package_version()
-    protocol = read_protocol_version() if protocol is None else protocol
+    protocol = (
+        read_protocol_version(PROJECT_ROOT / "src/protocol/wire.rs")
+        if protocol is None
+        else protocol
+    )
     marker = identity_marker(base_version, protocol)
     linux_data = validate_linux_payload(linux_path, marker)
     windows_data = validate_windows_payload(windows_path, marker)

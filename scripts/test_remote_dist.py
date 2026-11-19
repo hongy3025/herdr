@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -125,6 +126,15 @@ class PackageDistTests(unittest.TestCase):
             manifest = json.loads(archive.read(DIST_MANIFEST_ENTRY))
         self.assertEqual(manifest["version"], f"{BASE_VERSION}-preview.abc")
         self.assertEqual(manifest["build_id"], "abc")
+
+    def test_packages_from_another_working_directory(self) -> None:
+        cwd = os.getcwd()
+        os.chdir(self.root)
+        try:
+            output = self.package(self.root / "cwd.zip")
+        finally:
+            os.chdir(cwd)
+        self.assertTrue(output.is_file())
 
 
 if __name__ == "__main__":
