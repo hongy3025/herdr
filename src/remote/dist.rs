@@ -68,6 +68,11 @@ impl DistArchive {
     }
 
     pub(super) fn open(path: PathBuf) -> io::Result<Self> {
+        tracing::debug!(
+            identity = crate::build_info::DIST_IDENTITY_MARKER,
+            archive = %path.display(),
+            "inspecting remote distribution archive"
+        );
         let manifest = read_manifest(&path)?;
         if manifest.schema_version != DIST_SCHEMA_VERSION {
             return Err(invalid_data(format!(
@@ -132,7 +137,11 @@ impl DistArchive {
         }
     }
 
-    fn extract_entry_inner(&self, asset_key: &str, dir: &Path) -> io::Result<(PathBuf, DistFormat)> {
+    fn extract_entry_inner(
+        &self,
+        asset_key: &str,
+        dir: &Path,
+    ) -> io::Result<(PathBuf, DistFormat)> {
         let entry = self.entry(asset_key)?;
         let payload = payload_file_name(&entry.path)?;
         let sha256 = entry.sha256.clone();
@@ -235,11 +244,14 @@ fn payload_file_name(path: &str) -> io::Result<&str> {
             "{DIST_ARCHIVE_FILE} payload path {path} must name a single file inside the archive"
         )));
     }
-    parsed.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
-        invalid_data(format!(
-            "{DIST_ARCHIVE_FILE} payload path {path} is not valid UTF-8"
-        ))
-    })
+    parsed
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            invalid_data(format!(
+                "{DIST_ARCHIVE_FILE} payload path {path} is not valid UTF-8"
+            ))
+        })
 }
 
 fn check_entry_size(size: u64) -> io::Result<()> {
@@ -304,10 +316,8 @@ mod tests {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "herdr-dist-test-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("herdr-dist-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create test dir");
         dir
@@ -355,7 +365,11 @@ mod tests {
             .start_file(DIST_MANIFEST_FILE, zip::write::SimpleFileOptions::default())
             .expect("manifest entry");
         writer
-            .write_all(serde_json::to_string(&manifest).expect("serialize").as_bytes())
+            .write_all(
+                serde_json::to_string(&manifest)
+                    .expect("serialize")
+                    .as_bytes(),
+            )
             .expect("write manifest");
         for (name, bytes) in payloads {
             writer
@@ -372,8 +386,14 @@ mod tests {
         let dir = temp_dir("round-trip");
         let path = write_archive(
             &dir,
-            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION),
-            &[("herdr-linux-x86_64", b"payload"), ("herdr-windows-x86_64.zip", b"windows")],
+            valid_manifest(
+                &crate::build_info::version(),
+                crate::protocol::PROTOCOL_VERSION,
+            ),
+            &[
+                ("herdr-linux-x86_64", b"payload"),
+                ("herdr-windows-x86_64.zip", b"windows"),
+            ],
         );
 
         let archive = DistArchive::open(path).expect("open archive");
@@ -381,7 +401,13 @@ mod tests {
         assert_eq!(entry.format, DistFormat::Exe);
         assert_eq!(entry.path, "herdr-linux-x86_64");
         assert_eq!(entry.sha256, sha_hex(b"payload"));
-        assert_eq!(archive.entry("windows-x86_64").expect("windows entry").format, DistFormat::Zip);
+        assert_eq!(
+            archive
+                .entry("windows-x86_64")
+                .expect("windows entry")
+                .format,
+            DistFormat::Zip
+        );
     }
 
     #[test]
@@ -422,7 +448,10 @@ mod tests {
     #[test]
     fn rejects_unknown_schema() {
         let dir = temp_dir("unknown-schema");
-        let mut manifest = valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION);
+        let mut manifest = valid_manifest(
+            &crate::build_info::version(),
+            crate::protocol::PROTOCOL_VERSION,
+        );
         manifest["schema_version"] = json!(2);
         let path = write_archive(&dir, manifest, &[("herdr-linux-x86_64", b"payload")]);
 
@@ -433,7 +462,10 @@ mod tests {
     #[test]
     fn reports_missing_platform() {
         let dir = temp_dir("missing-platform");
-        let mut manifest = valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION);
+        let mut manifest = valid_manifest(
+            &crate::build_info::version(),
+            crate::protocol::PROTOCOL_VERSION,
+        );
         manifest["entries"] = json!({
             "linux-x86_64": {
                 "path": "herdr-linux-x86_64",
@@ -459,7 +491,10 @@ mod tests {
         let file = File::create(&path).expect("create archive");
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file("herdr-linux-x86_64", zip::write::SimpleFileOptions::default())
+            .start_file(
+                "herdr-linux-x86_64",
+                zip::write::SimpleFileOptions::default(),
+            )
             .expect("payload entry");
         writer.write_all(b"payload").expect("write payload");
         writer.finish().expect("finish archive");
@@ -473,8 +508,8 @@ mod tests {
         let dir = temp_dir("env-missing");
         let missing = dir.join("nope.zip");
         let config = dir.join("config-herdr-dist.zip");
-        let err = locate_from(Some(missing), &config, None)
-            .expect_err("explicit env path must exist");
+        let err =
+            locate_from(Some(missing), &config, None).expect_err("explicit env path must exist");
         assert!(err.to_string().contains("HERDR_DIST_ARCHIVE"), "{err}");
     }
 
@@ -521,7 +556,10 @@ mod tests {
     fn extracts_linux_payload_with_checksum() {
         let archive = archive_with(
             "extract-linux",
-            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION),
+            valid_manifest(
+                &crate::build_info::version(),
+                crate::protocol::PROTOCOL_VERSION,
+            ),
             &[("herdr-linux-x86_64", b"payload")],
         );
         let dir = temp_dir("extract-linux-out");
@@ -540,10 +578,16 @@ mod tests {
 
     #[test]
     fn rejects_checksum_mismatch_and_cleans_up() {
-        let mut manifest =
-            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION);
+        let mut manifest = valid_manifest(
+            &crate::build_info::version(),
+            crate::protocol::PROTOCOL_VERSION,
+        );
         manifest["entries"]["linux-x86_64"]["sha256"] = json!("0".repeat(64));
-        let archive = archive_with("extract-bad-sha", manifest, &[("herdr-linux-x86_64", b"payload")]);
+        let archive = archive_with(
+            "extract-bad-sha",
+            manifest,
+            &[("herdr-linux-x86_64", b"payload")],
+        );
         let dir = temp_dir("extract-bad-sha-out");
 
         let err = archive
@@ -562,10 +606,16 @@ mod tests {
 
     #[test]
     fn rejects_absolute_path_in_manifest() {
-        let mut manifest =
-            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION);
+        let mut manifest = valid_manifest(
+            &crate::build_info::version(),
+            crate::protocol::PROTOCOL_VERSION,
+        );
         manifest["entries"]["linux-x86_64"]["path"] = json!("/etc/passwd");
-        let archive = archive_with("extract-absolute", manifest, &[("herdr-linux-x86_64", b"payload")]);
+        let archive = archive_with(
+            "extract-absolute",
+            manifest,
+            &[("herdr-linux-x86_64", b"payload")],
+        );
 
         let err = archive
             .extract_entry("linux-x86_64", temp_dir("extract-absolute-out"))
@@ -575,10 +625,16 @@ mod tests {
 
     #[test]
     fn rejects_parent_component() {
-        let mut manifest =
-            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION);
+        let mut manifest = valid_manifest(
+            &crate::build_info::version(),
+            crate::protocol::PROTOCOL_VERSION,
+        );
         manifest["entries"]["linux-x86_64"]["path"] = json!("../herdr");
-        let archive = archive_with("extract-parent", manifest, &[("herdr-linux-x86_64", b"payload")]);
+        let archive = archive_with(
+            "extract-parent",
+            manifest,
+            &[("herdr-linux-x86_64", b"payload")],
+        );
 
         let err = archive
             .extract_entry("linux-x86_64", temp_dir("extract-parent-out"))
@@ -590,7 +646,10 @@ mod tests {
     fn windows_payload_lands_as_zip() {
         let archive = archive_with(
             "extract-windows",
-            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION),
+            valid_manifest(
+                &crate::build_info::version(),
+                crate::protocol::PROTOCOL_VERSION,
+            ),
             &[("herdr-windows-x86_64.zip", b"windows")],
         );
         let dir = temp_dir("extract-windows-out");
@@ -613,7 +672,10 @@ mod tests {
 
         let archive = archive_with(
             "extract-executable",
-            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION),
+            valid_manifest(
+                &crate::build_info::version(),
+                crate::protocol::PROTOCOL_VERSION,
+            ),
             &[("herdr-linux-x86_64", b"payload")],
         );
         let install = archive

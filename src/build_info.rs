@@ -7,6 +7,8 @@ pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// `concat!` only accepts literals, so the protocol number is duplicated here;
 /// `dist_identity_marker_tracks_version_and_protocol` keeps it in sync with
 /// `PROTOCOL_VERSION`.
+/// `remote::dist` logs this value so the bytes stay in the binary; the
+/// packager scans payloads for it.
 pub const DIST_IDENTITY_MARKER: &str =
     concat!("herdr-dist-identity:1:", env!("CARGO_PKG_VERSION"), ":22");
 
