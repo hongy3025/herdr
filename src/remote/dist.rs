@@ -39,6 +39,7 @@ pub(super) struct DistEntry {
 #[derive(Debug, Clone, Deserialize)]
 struct DistManifest {
     schema_version: u32,
+    build_identity: String,
     version: String,
     protocol: u32,
     entries: BTreeMap<String, DistEntry>,
@@ -78,6 +79,13 @@ impl DistArchive {
             return Err(invalid_data(format!(
                 "{DIST_ARCHIVE_FILE} uses manifest schema {} but this client supports {DIST_SCHEMA_VERSION}",
                 manifest.schema_version
+            )));
+        }
+        if manifest.build_identity != crate::build_info::DIST_IDENTITY_MARKER {
+            return Err(invalid_data(format!(
+                "{DIST_ARCHIVE_FILE} was packaged from build {} but this client is {}; rebuild {DIST_ARCHIVE_FILE} from this build",
+                manifest.build_identity,
+                crate::build_info::DIST_IDENTITY_MARKER
             )));
         }
         let current_version = crate::build_info::version();
@@ -173,6 +181,17 @@ impl DistArchive {
 
         crate::checksum::verify_sha256(&path, &sha256)?;
 
+        if format == DistFormat::Exe
+            && !file_contains(&path, crate::build_info::DIST_IDENTITY_MARKER.as_bytes())?
+        {
+            return Err(invalid_data(format!(
+                "{DIST_ARCHIVE_FILE} payload {payload} does not carry build identity {}; package the {asset_key} binary produced by this build",
+                crate::build_info::DIST_IDENTITY_MARKER
+            )));
+        }
+        // A nested Windows package is validated by the packager, which reads
+        // herdr.exe out of the inner zip and checks the same identity.
+
         #[cfg(unix)]
         if format == DistFormat::Exe {
             use std::os::unix::fs::PermissionsExt;
@@ -267,6 +286,31 @@ fn entry_too_large(size: u64) -> io::Error {
     ))
 }
 
+fn file_contains(path: &Path, needle: &[u8]) -> io::Result<bool> {
+    if needle.is_empty() {
+        return Ok(true);
+    }
+    let mut file = File::open(path)?;
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut window = Vec::new();
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(false);
+        }
+        window.extend_from_slice(&buffer[..read]);
+        if window
+            .windows(needle.len())
+            .any(|candidate| candidate == needle)
+        {
+            return Ok(true);
+        }
+        let keep = needle.len().saturating_sub(1);
+        let start = window.len().saturating_sub(keep);
+        window.drain(..start);
+    }
+}
+
 fn read_manifest(path: &Path) -> io::Result<DistManifest> {
     let file = File::open(path)?;
     let mut archive = zip::ZipArchive::new(file).map_err(|err| {
@@ -331,9 +375,16 @@ mod tests {
             .collect()
     }
 
+    fn linux_payload() -> Vec<u8> {
+        let mut payload = b"payload:".to_vec();
+        payload.extend_from_slice(crate::build_info::DIST_IDENTITY_MARKER.as_bytes());
+        payload
+    }
+
     fn valid_manifest(version: &str, protocol: u32) -> serde_json::Value {
         json!({
             "schema_version": 1,
+            "build_identity": crate::build_info::DIST_IDENTITY_MARKER,
             "version": version,
             "channel": "stable",
             "build_id": null,
@@ -341,7 +392,7 @@ mod tests {
             "entries": {
                 "linux-x86_64": {
                     "path": "herdr-linux-x86_64",
-                    "sha256": sha_hex(b"payload"),
+                    "sha256": sha_hex(&linux_payload()),
                     "format": "exe",
                 },
                 "windows-x86_64": {
@@ -391,7 +442,7 @@ mod tests {
                 crate::protocol::PROTOCOL_VERSION,
             ),
             &[
-                ("herdr-linux-x86_64", b"payload"),
+                ("herdr-linux-x86_64", linux_payload().as_slice()),
                 ("herdr-windows-x86_64.zip", b"windows"),
             ],
         );
@@ -400,7 +451,7 @@ mod tests {
         let entry = archive.entry("linux-x86_64").expect("linux entry");
         assert_eq!(entry.format, DistFormat::Exe);
         assert_eq!(entry.path, "herdr-linux-x86_64");
-        assert_eq!(entry.sha256, sha_hex(b"payload"));
+        assert_eq!(entry.sha256, sha_hex(&linux_payload()));
         assert_eq!(
             archive
                 .entry("windows-x86_64")
@@ -416,7 +467,7 @@ mod tests {
         let path = write_archive(
             &dir,
             valid_manifest("0.0.1", crate::protocol::PROTOCOL_VERSION),
-            &[("herdr-linux-x86_64", b"payload")],
+            &[("herdr-linux-x86_64", linux_payload().as_slice())],
         );
 
         let err = DistArchive::open(path).expect_err("stale version must fail");
@@ -433,7 +484,7 @@ mod tests {
         let path = write_archive(
             &dir,
             valid_manifest(&crate::build_info::version(), protocol),
-            &[("herdr-linux-x86_64", b"payload")],
+            &[("herdr-linux-x86_64", linux_payload().as_slice())],
         );
 
         let err = DistArchive::open(path).expect_err("wrong protocol must fail");
@@ -453,10 +504,60 @@ mod tests {
             crate::protocol::PROTOCOL_VERSION,
         );
         manifest["schema_version"] = json!(2);
-        let path = write_archive(&dir, manifest, &[("herdr-linux-x86_64", b"payload")]);
+        let path = write_archive(
+            &dir,
+            manifest,
+            &[("herdr-linux-x86_64", linux_payload().as_slice())],
+        );
 
         let err = DistArchive::open(path).expect_err("unknown schema must fail");
         assert!(err.to_string().contains("schema"), "{err}");
+    }
+
+    #[test]
+    fn rejects_archive_from_another_build() {
+        let dir = temp_dir("other-build");
+        let mut manifest = valid_manifest(
+            &crate::build_info::version(),
+            crate::protocol::PROTOCOL_VERSION,
+        );
+        manifest["build_identity"] = json!("herdr-dist-identity:2:0.0.0:1:stable:-:-");
+        let path = write_archive(
+            &dir,
+            manifest,
+            &[("herdr-linux-x86_64", linux_payload().as_slice())],
+        );
+
+        let err = DistArchive::open(path).expect_err("other build must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("herdr-dist-identity:2:0.0.0:1:stable:-:-"),
+            "{message}"
+        );
+        assert!(
+            message.contains(crate::build_info::DIST_IDENTITY_MARKER),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_payload_without_build_identity() {
+        let dir = temp_dir("payload-without-identity");
+        let mut manifest = valid_manifest(
+            &crate::build_info::version(),
+            crate::protocol::PROTOCOL_VERSION,
+        );
+        manifest["entries"]["linux-x86_64"]["sha256"] = json!(sha_hex(b"payload"));
+        let archive = archive_with(
+            "payload-without-identity-archive",
+            manifest,
+            &[("herdr-linux-x86_64", b"payload")],
+        );
+
+        let err = archive
+            .extract_entry("linux-x86_64", temp_dir("payload-without-identity-out"))
+            .expect_err("payload from another build must fail");
+        assert!(err.to_string().contains("build identity"), "{err}");
     }
 
     #[test]
@@ -469,11 +570,15 @@ mod tests {
         manifest["entries"] = json!({
             "linux-x86_64": {
                 "path": "herdr-linux-x86_64",
-                "sha256": sha_hex(b"payload"),
+                "sha256": sha_hex(&linux_payload()),
                 "format": "exe",
             },
         });
-        let path = write_archive(&dir, manifest, &[("herdr-linux-x86_64", b"payload")]);
+        let path = write_archive(
+            &dir,
+            manifest,
+            &[("herdr-linux-x86_64", linux_payload().as_slice())],
+        );
 
         let archive = DistArchive::open(path).expect("open archive");
         let err = archive
@@ -560,7 +665,7 @@ mod tests {
                 &crate::build_info::version(),
                 crate::protocol::PROTOCOL_VERSION,
             ),
-            &[("herdr-linux-x86_64", b"payload")],
+            &[("herdr-linux-x86_64", linux_payload().as_slice())],
         );
         let dir = temp_dir("extract-linux-out");
 
@@ -568,10 +673,13 @@ mod tests {
             .extract_entry("linux-x86_64", dir.clone())
             .expect("extract");
         assert_eq!(install.format, DistFormat::Exe);
-        assert_eq!(fs::read(&install.path).expect("read payload"), b"payload");
+        assert_eq!(
+            fs::read(&install.path).expect("read payload"),
+            linux_payload()
+        );
         assert_eq!(
             crate::checksum::file_sha256(&install.path).expect("hash"),
-            sha_hex(b"payload")
+            sha_hex(&linux_payload())
         );
         assert_eq!(install.temporary_dir, dir);
     }
@@ -586,7 +694,7 @@ mod tests {
         let archive = archive_with(
             "extract-bad-sha",
             manifest,
-            &[("herdr-linux-x86_64", b"payload")],
+            &[("herdr-linux-x86_64", linux_payload().as_slice())],
         );
         let dir = temp_dir("extract-bad-sha-out");
 
@@ -614,7 +722,7 @@ mod tests {
         let archive = archive_with(
             "extract-absolute",
             manifest,
-            &[("herdr-linux-x86_64", b"payload")],
+            &[("herdr-linux-x86_64", linux_payload().as_slice())],
         );
 
         let err = archive
@@ -633,7 +741,7 @@ mod tests {
         let archive = archive_with(
             "extract-parent",
             manifest,
-            &[("herdr-linux-x86_64", b"payload")],
+            &[("herdr-linux-x86_64", linux_payload().as_slice())],
         );
 
         let err = archive
@@ -676,7 +784,7 @@ mod tests {
                 &crate::build_info::version(),
                 crate::protocol::PROTOCOL_VERSION,
             ),
-            &[("herdr-linux-x86_64", b"payload")],
+            &[("herdr-linux-x86_64", linux_payload().as_slice())],
         );
         let install = archive
             .extract_entry("linux-x86_64", temp_dir("extract-executable-out"))

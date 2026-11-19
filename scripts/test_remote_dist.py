@@ -15,14 +15,19 @@ from scripts.package_remote_dist import (
     WINDOWS_ENTRY,
     PackageError,
     build_version,
-    identity_marker,
     package_dist,
     read_package_version,
 )
 
 BASE_VERSION = read_package_version()
 PROTOCOL = read_protocol_version()
-MARKER = identity_marker(BASE_VERSION, PROTOCOL)
+
+
+def identity(version: str = BASE_VERSION, protocol: int = PROTOCOL, channel: str = "stable") -> bytes:
+    return f"herdr-dist-identity:2:{version}:{protocol}:{channel}:-:-".encode()
+
+
+MARKER = identity()
 
 
 def fake_linux(marker: bytes = MARKER, machine: int = 62, elf: bool = True) -> bytes:
@@ -65,6 +70,7 @@ class PackageDistTests(unittest.TestCase):
         with zipfile.ZipFile(output) as archive:
             manifest = json.loads(archive.read(DIST_MANIFEST_ENTRY))
             self.assertEqual(manifest["schema_version"], 1)
+            self.assertEqual(manifest["build_identity"], MARKER.decode())
             self.assertEqual(manifest["version"], BASE_VERSION)
             self.assertEqual(manifest["protocol"], PROTOCOL)
             linux_entry = manifest["entries"]["linux-x86_64"]
@@ -116,11 +122,37 @@ class PackageDistTests(unittest.TestCase):
         with self.assertRaisesRegex(PackageError, "herdr.exe"):
             self.package()
 
+    def test_rejects_payloads_from_different_builds(self) -> None:
+        self.windows.write_bytes(fake_windows(marker=identity(channel="custom")))
+        with self.assertRaisesRegex(PackageError, "build identities differ"):
+            self.package()
+
+    def test_rejects_payload_for_another_source_version(self) -> None:
+        self.linux.write_bytes(fake_linux(marker=identity(version="0.0.1")))
+        self.windows.write_bytes(fake_windows(marker=identity(version="0.0.1")))
+        with self.assertRaisesRegex(PackageError, "version 0.0.1"):
+            self.package()
+
+    def test_rejects_payload_for_another_protocol(self) -> None:
+        self.linux.write_bytes(fake_linux(marker=identity(protocol=PROTOCOL + 1)))
+        self.windows.write_bytes(fake_windows(marker=identity(protocol=PROTOCOL + 1)))
+        with self.assertRaisesRegex(PackageError, "protocol"):
+            self.package()
+
+    def test_rejects_payload_for_another_channel(self) -> None:
+        self.linux.write_bytes(fake_linux(marker=identity(channel="custom")))
+        self.windows.write_bytes(fake_windows(marker=identity(channel="custom")))
+        with self.assertRaisesRegex(PackageError, "channel"):
+            self.package()
+
     def test_custom_channel_version(self) -> None:
         self.assertEqual(build_version("1.2.3", "preview", "abc"), "1.2.3-preview.abc")
         self.assertEqual(build_version("1.2.3", "preview", None), "1.2.3-preview")
         self.assertEqual(build_version("1.2.3", "stable", "abc"), "1.2.3")
 
+        marker = identity(channel="preview")
+        self.linux.write_bytes(fake_linux(marker=marker))
+        self.windows.write_bytes(fake_windows(marker=marker))
         output = self.package(channel="preview", build_id="abc")
         with zipfile.ZipFile(output) as archive:
             manifest = json.loads(archive.read(DIST_MANIFEST_ENTRY))

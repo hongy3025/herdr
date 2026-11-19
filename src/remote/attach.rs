@@ -1556,7 +1556,11 @@ fn prepare_discovered_remote_herdr(
 
     // Only inspect the archive once an install is actually needed: a stale
     // sidecar must not block connecting to a remote that is already compatible.
-    let dist_description = dist_install_description(&remote_herdr.platform)?;
+    let dist_description = if override_binary.is_none() {
+        dist_install_description(&remote_herdr.platform)?
+    } else {
+        None
+    };
     require_custom_source_for_force(
         force_install,
         override_binary.is_some(),
@@ -1588,7 +1592,11 @@ fn prepare_discovered_remote_herdr(
             ),
         )?;
     }
-    let source = resolve_install_source(&remote_herdr.platform, override_binary)?;
+    let source = resolve_install_source(
+        &remote_herdr.platform,
+        override_binary,
+        dist_description.is_some(),
+    )?;
     let install_result = ssh.install_herdr(&remote_herdr, &source.path);
     source.cleanup();
     install_result?;
@@ -1653,7 +1661,11 @@ fn prepare_windows_remote_herdr(
             }
         }
     }
-    let dist_description = dist_install_description(&remote_herdr.platform)?;
+    let dist_description = if custom_package {
+        None
+    } else {
+        dist_install_description(&remote_herdr.platform)?
+    };
     require_custom_source_for_force(force_install, custom_package, dist_description.is_some())?;
 
     let stop_after_install_approved = if let Some(candidate) = candidates.first() {
@@ -1679,7 +1691,11 @@ fn prepare_windows_remote_herdr(
         )?;
     }
     // Windows needs the complete package, including its app-local ConPTY runtime.
-    let (source, used_dist) = windows_install_source(override_package, &remote_herdr.platform)?;
+    let (source, used_dist) = windows_install_source(
+        override_package,
+        &remote_herdr.platform,
+        dist_description.is_some(),
+    )?;
     let custom_identity = custom_package || used_dist;
     let install_result = (|| {
         let sha256 = crate::checksum::file_sha256(&source.path)?;
@@ -2177,6 +2193,7 @@ fn install_source_description_for(
 fn resolve_install_source(
     platform: &RemotePlatform,
     override_binary: Option<PathBuf>,
+    dist_expected: bool,
 ) -> io::Result<InstallSource> {
     if let Some(path) = override_binary {
         return Ok(InstallSource::persistent(path));
@@ -2189,11 +2206,11 @@ fn resolve_install_source(
         }
     }
 
-    if let Some(source) = dist_install_source(platform)? {
-        return Ok(source);
+    match dist_install_source(platform)? {
+        Some(source) => Ok(source),
+        None if dist_expected => Err(missing_dist_archive()),
+        None => download_release_asset(platform),
     }
-
-    download_release_asset(platform)
 }
 
 fn dist_install_description(platform: &RemotePlatform) -> io::Result<Option<String>> {
@@ -2220,13 +2237,20 @@ fn ensure_dist_format(
     platform: &RemotePlatform,
     format: crate::remote::dist::DistFormat,
 ) -> io::Result<()> {
-    if platform.is_windows() || format == crate::remote::dist::DistFormat::Exe {
-        return Ok(());
+    match (platform.is_windows(), format) {
+        (true, crate::remote::dist::DistFormat::Zip)
+        | (false, crate::remote::dist::DistFormat::Exe) => return Ok(()),
+        _ => {}
     }
+    let expected = if platform.is_windows() {
+        "a complete Windows package (herdr-windows-x86_64.zip)"
+    } else {
+        "an executable"
+    };
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
         format!(
-            "herdr-dist.zip entry for {} is a package archive (herdr-windows-x86_64.zip), not an executable for this platform",
+            "herdr-dist.zip entry for {} must be {expected}",
             platform.asset_key()
         ),
     ))
@@ -2253,22 +2277,23 @@ fn windows_package_identity(custom: bool, sha256: &str) -> String {
 fn windows_install_source(
     override_package: Option<PathBuf>,
     platform: &RemotePlatform,
+    dist_expected: bool,
 ) -> io::Result<(InstallSource, bool)> {
-    let dist = dist_install_source(platform)?;
-    match windows_install_source_from(override_package, dist) {
-        Some(selection) => Ok(selection),
+    if let Some(path) = override_package {
+        return Ok((InstallSource::persistent(path), false));
+    }
+    match dist_install_source(platform)? {
+        Some(source) => Ok((source, true)),
+        None if dist_expected => Err(missing_dist_archive()),
         None => Ok((download_release_asset(platform)?, false)),
     }
 }
 
-fn windows_install_source_from(
-    override_package: Option<PathBuf>,
-    dist: Option<InstallSource>,
-) -> Option<(InstallSource, bool)> {
-    if let Some(path) = override_package {
-        return Some((InstallSource::persistent(path), false));
-    }
-    dist.map(|source| (source, true))
+fn missing_dist_archive() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        "herdr-dist.zip was removed after the install prompt; the remote was not changed",
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6301,10 +6326,17 @@ function Get-Process {
         ensure_dist_format(&platform, crate::remote::dist::DistFormat::Exe).expect("exe payload");
         let err = ensure_dist_format(&platform, crate::remote::dist::DistFormat::Zip)
             .expect_err("zip payload must not install onto linux");
-        assert!(
-            err.to_string().contains("herdr-windows-x86_64.zip"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("executable"), "{err}");
+
+        let windows = RemotePlatform {
+            os: "windows",
+            arch: "x86_64",
+        };
+        ensure_dist_format(&windows, crate::remote::dist::DistFormat::Zip)
+            .expect("windows package");
+        let err = ensure_dist_format(&windows, crate::remote::dist::DistFormat::Exe)
+            .expect_err("bare exe must not install onto windows");
+        assert!(err.to_string().contains("Windows package"), "{err}");
     }
 
     #[test]
@@ -6317,14 +6349,16 @@ function Get-Process {
     }
 
     #[test]
-    fn windows_install_source_prefers_override_package() {
-        let dist = InstallSource::temporary(
-            PathBuf::from("/tmp/herdr-windows-x86_64.zip"),
-            PathBuf::from("/tmp/dist"),
-        );
+    fn windows_install_source_prefers_override_without_touching_the_archive() {
+        let platform = RemotePlatform {
+            os: "windows",
+            arch: "x86_64",
+        };
 
+        // `dist_expected` is deliberately true: the override must win before any
+        // archive lookup, so a stale sidecar cannot break the explicit source.
         let (source, used_dist) =
-            windows_install_source_from(Some(PathBuf::from("/tmp/custom.zip")), Some(dist))
+            windows_install_source(Some(PathBuf::from("/tmp/custom.zip")), &platform, true)
                 .expect("override selection");
         assert_eq!(source.path, PathBuf::from("/tmp/custom.zip"));
         assert!(source.temporary_dir.is_none());
@@ -6332,25 +6366,10 @@ function Get-Process {
     }
 
     #[test]
-    fn windows_install_source_uses_dist_package() {
-        let dist = InstallSource::temporary(
-            PathBuf::from("/tmp/herdr-windows-x86_64.zip"),
-            PathBuf::from("/tmp/dist"),
-        );
-
-        let (source, used_dist) =
-            windows_install_source_from(None, Some(dist)).expect("dist selection");
-        assert_eq!(source.path, PathBuf::from("/tmp/herdr-windows-x86_64.zip"));
-        assert_eq!(
-            source.temporary_dir.as_deref(),
-            Some(Path::new("/tmp/dist"))
-        );
-        assert!(used_dist);
-    }
-
-    #[test]
-    fn windows_install_source_falls_back_to_published_release() {
-        assert!(windows_install_source_from(None, None).is_none());
+    fn missing_dist_archive_names_the_file() {
+        let error = missing_dist_archive();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("herdr-dist.zip"), "{error}");
     }
 
     #[test]
@@ -6392,8 +6411,9 @@ function Get-Process {
             os: "linux",
             arch: "aarch64",
         };
-        let source = resolve_install_source(&platform, Some(PathBuf::from("/tmp/herdr-aarch64")))
-            .expect("override source");
+        let source =
+            resolve_install_source(&platform, Some(PathBuf::from("/tmp/herdr-aarch64")), true)
+                .expect("override source");
         assert_eq!(source.path, PathBuf::from("/tmp/herdr-aarch64"));
         assert!(source.temporary_dir.is_none());
     }

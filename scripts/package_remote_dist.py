@@ -29,7 +29,7 @@ CARGO_TOML = PROJECT_ROOT / "Cargo.toml"
 DIST_MANIFEST_ENTRY = "herdr-dist.json"
 LINUX_ENTRY = "herdr-linux-x86_64"
 WINDOWS_ENTRY = "herdr-windows-x86_64.zip"
-IDENTITY_MARKER_PREFIX = "herdr-dist-identity:1:"
+IDENTITY_MARKER_PREFIX = "herdr-dist-identity:2:"
 SCHEMA_VERSION = 1
 ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
 ELF_MACHINE_X86_64 = 62
@@ -62,15 +62,34 @@ def build_version(base_version: str, channel: str, build_id: str | None) -> str:
     return f"{base_version}-{channel}"
 
 
-def identity_marker(base_version: str, protocol: int) -> bytes:
-    return f"{IDENTITY_MARKER_PREFIX}{base_version}:{protocol}".encode()
-
-
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def validate_linux_payload(path: Path, marker: bytes) -> bytes:
+_IDENTITY_BYTES = frozenset(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.:_-"
+)
+
+
+def find_build_identity(data: bytes, source: Path) -> str:
+    prefix = IDENTITY_MARKER_PREFIX.encode()
+    start = data.find(prefix)
+    if start < 0:
+        raise PackageError(
+            f"{source} was not built with {IDENTITY_MARKER_PREFIX}; "
+            "pass a payload produced by the build you are packaging"
+        )
+    end = start
+    while end < len(data) and data[end] in _IDENTITY_BYTES:
+        end += 1
+    identity = data[start:end].decode("ascii")
+    parts = identity.split(":")
+    if len(parts) != 7 or parts[0] != "herdr-dist-identity" or parts[1] != "2":
+        raise PackageError(f"{source} carries a malformed build identity: {identity}")
+    return identity
+
+
+def validate_linux_payload(path: Path) -> tuple[bytes, str]:
     data = path.read_bytes()
     if len(data) < 20 or data[:4] != b"\x7fELF":
         raise PackageError(f"{path} is not an ELF binary")
@@ -81,15 +100,10 @@ def validate_linux_payload(path: Path, marker: bytes) -> bytes:
         raise PackageError(
             f"{path} targets ELF machine {machine}; expected x86_64 ({ELF_MACHINE_X86_64})"
         )
-    if marker not in data:
-        raise PackageError(
-            f"{path} does not contain {marker.decode()} from this build; "
-            "pass the binary produced by the build you are packaging"
-        )
-    return data
+    return data, find_build_identity(data, path)
 
 
-def validate_windows_payload(path: Path, marker: bytes) -> bytes:
+def validate_windows_payload(path: Path) -> tuple[bytes, str]:
     data = path.read_bytes()
     try:
         with zipfile.ZipFile(path) as archive:
@@ -103,11 +117,7 @@ def validate_windows_payload(path: Path, marker: bytes) -> bytes:
             executable = archive.read("herdr.exe")
     except zipfile.BadZipFile as error:
         raise PackageError(f"{path} is not a readable zip archive: {error}") from error
-    if marker not in executable:
-        raise PackageError(
-            f"{path} contains a herdr.exe without {marker.decode()} from this build"
-        )
-    return data
+    return data, find_build_identity(executable, path / "herdr.exe")
 
 
 def write_entry(
@@ -127,6 +137,7 @@ def write_entry(
 
 def build_manifest(
     *,
+    build_identity: str,
     version: str,
     channel: str,
     build_id: str | None,
@@ -136,6 +147,7 @@ def build_manifest(
 ) -> dict[str, object]:
     return {
         "schema_version": SCHEMA_VERSION,
+        "build_identity": build_identity,
         "version": version,
         "channel": channel,
         "build_id": build_id,
@@ -171,12 +183,34 @@ def package_dist(
         if protocol is None
         else protocol
     )
-    marker = identity_marker(base_version, protocol)
-    linux_data = validate_linux_payload(linux_path, marker)
-    windows_data = validate_windows_payload(windows_path, marker)
+    linux_data, linux_identity = validate_linux_payload(linux_path)
+    windows_data, windows_identity = validate_windows_payload(windows_path)
+    if linux_identity != windows_identity:
+        raise PackageError(
+            "payload build identities differ: "
+            f"linux={linux_identity}, windows={windows_identity}; "
+            "package both payloads from the same build"
+        )
+    identity_parts = linux_identity.split(":")
+    if identity_parts[2] != base_version:
+        raise PackageError(
+            f"{linux_path} was built for version {identity_parts[2]}, "
+            f"but Cargo.toml says {base_version}"
+        )
+    if identity_parts[3] != str(protocol):
+        raise PackageError(
+            f"{linux_path} was built for protocol {identity_parts[3]}, "
+            f"but the source speaks {protocol}"
+        )
+    if identity_parts[4] != channel:
+        raise PackageError(
+            f"{linux_path} was built for channel {identity_parts[4]}, "
+            f"but --channel is {channel}"
+        )
     full_version = version or build_version(base_version, channel, build_id)
 
     manifest = build_manifest(
+        build_identity=linux_identity,
         version=full_version,
         channel=channel,
         build_id=build_id,
