@@ -110,7 +110,7 @@ To install a custom build onto other machines, package the platform payloads onc
 just dist-archive path/to/herdr-linux-x86_64 herdr-windows-x86_64.zip
 ```
 
-Herdr looks for `herdr-dist.zip` in `HERDR_DIST_ARCHIVE`, then the Herdr config directory (`~/.config/herdr` or `%APPDATA%\herdr`), then the directory containing the running executable. When the archive exists it replaces the published release manifest for remote installs: a missing platform, a different version or protocol, or a failed checksum stops the install before anything is written to the remote. Use `herdr machine add --force` to replace a machine that already runs a compatible build.
+Herdr looks for `herdr-dist.zip` in `HERDR_DIST_ARCHIVE`, then the Herdr config directory (`~/.config/herdr` or `%APPDATA%\herdr`), then the directory containing the running executable. When the archive exists it replaces the published release manifest for remote installs. Both payloads must come from the same build as the client: a missing platform, a different build identity, version, or protocol, or a failed checksum stops the install before anything is written to the remote. Use `herdr machine add --force` to replace a machine that already runs a compatible build.
 
 ## Remote named sessions
 
