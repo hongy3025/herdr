@@ -13,8 +13,12 @@ test:
 
 # Run repository maintenance contract tests
 maintenance-test:
-    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
+    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_remote_dist scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
     bun test scripts/release-workflows.test.ts
+
+# Package locally built payloads into dist/herdr-dist.zip for remote installs
+dist-archive linux_bin='target/x86_64-unknown-linux-gnu/release/herdr' windows_zip='herdr-windows-x86_64.zip':
+    {{python}} scripts/package_remote_dist.py --linux {{linux_bin}} --windows {{windows_zip}} --out dist/herdr-dist.zip
 
 # Local interactive Windows Terminal input qualification (never runs in normal CI).
 [windows]
