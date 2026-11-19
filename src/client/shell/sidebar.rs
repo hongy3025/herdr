@@ -9,36 +9,36 @@ use ratatui::{
 pub(in crate::client::shell) struct SpaceRowWidgets {
     pub pane_dots: Vec<(Rect, String)>,
     pub tab_badge: Option<(Rect, String)>,
+    pub status_recap: Option<(Rect, String)>,
 }
 
-/// One-line agent status text for a Space row, when the winning agent is
-/// blocked, done, or working.
+/// The winning agent's label and status text, when one is associated with the
+/// Space.
 pub(in crate::client::shell) fn space_status_line(
     summary: Option<&super::workspace_summary::WorkspaceAgentSummary>,
     config: &crate::config::SpacesSidebarConfig,
-) -> Option<(String, crate::api::schema::AgentStatus)> {
+) -> Option<(String, String, crate::api::schema::AgentStatus)> {
     use crate::api::schema::AgentStatus;
     if !config.status_text {
         return None;
     }
     let summary = summary?;
     let winner = summary.winner.as_ref()?;
-    if !matches!(
+    let is_idle_omp_recap =
+        winner.status == AgentStatus::Idle && winner.agent.as_deref() == Some("omp");
+    let text = if matches!(
         winner.status,
         AgentStatus::Blocked | AgentStatus::Done | AgentStatus::Working
-    ) {
-        return None;
-    }
-    let text = winner
-        .text
-        .clone()
-        .unwrap_or_else(|| status_text(winner.status).to_string());
-    let line = if summary.agent_count >= 2 {
-        format!("{} · {text}", winner.label)
+    ) || is_idle_omp_recap
+    {
+        winner
+            .text
+            .clone()
+            .unwrap_or_else(|| status_text(winner.status).to_string())
     } else {
-        text
+        status_text(winner.status).to_string()
     };
-    Some((line, winner.status))
+    Some((winner.label.clone(), text, winner.status))
 }
 
 pub(in crate::client::shell) fn space_row_height(
@@ -50,7 +50,9 @@ pub(in crate::client::shell) fn space_row_height(
     lines.max(1).min(u16::MAX as usize) as u16
 }
 
-fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
+pub(in crate::client::shell) fn workspace_selection_background(
+    palette: &Palette,
+) -> ratatui::style::Color {
     if palette.selection_bg == ratatui::style::Color::Reset {
         palette.active_row_bg
     } else {
@@ -400,6 +402,10 @@ pub(crate) fn render_sidebar(
         if config.mouse_capture {
             for (rect, pane_id) in widgets.pane_dots {
                 hits.workspace_pane_dots
+                    .push((rect, ClientEndpointId::Local, pane_id));
+            }
+            if let Some((rect, pane_id)) = widgets.status_recap {
+                hits.agent_recap_previews
                     .push((rect, ClientEndpointId::Local, pane_id));
             }
             if let Some((rect, workspace_id)) = widgets.tab_badge {
@@ -802,18 +808,26 @@ pub(in crate::client::shell) fn render_workspace_rows(
     } = row;
     let dots = summary
         .filter(|_| spaces.pane_strip)
-        .map(|summary| summary.active_tab_dots.as_slice())
+        .map(|summary| summary.pane_dots.as_slice())
         .filter(|dots| dots.len() >= 2);
     let badge = (tab_count >= 2).then(|| tab_count.to_string());
-    let widget_width = badge.as_ref().map_or(0, |badge| {
+    let widget_content_width = badge.as_ref().map_or(0, |badge| {
         display_width(badge) as usize + usize::from(dots.is_some())
     }) + dots.map_or(0, |dots| dots.len());
-    let text_right = area.right().saturating_sub(2 + widget_width as u16);
+    let widget_gap = usize::from(widget_content_width > 0);
+    let widget_width = widget_content_width + widget_gap;
+    let text_right = area.right().saturating_sub(2);
+    let first_row_text_right = text_right.saturating_sub(widget_width as u16);
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
         if y >= area.bottom() {
             break;
         }
+        let row_text_right = if row_index == 0 {
+            first_row_text_right
+        } else {
+            text_right
+        };
         let mut x = area.x;
         if entry.indented {
             let prefix = if row_index == 0 {
@@ -865,18 +879,20 @@ pub(in crate::client::shell) fn render_workspace_rows(
             ),
             Style::default().fg(status_color(status, palette)),
             workspace_style,
+            Style::default().fg(palette.mauve),
             secondary_style,
             Style::default().fg(palette.overlay1),
             palette,
-            text_right.saturating_sub(x) as usize,
+            row_text_right.saturating_sub(x) as usize,
         );
         Paragraph::new(Line::from(spans))
-            .render(Rect::new(x, y, text_right.saturating_sub(x), 1), buffer);
+            .render(Rect::new(x, y, row_text_right.saturating_sub(x), 1), buffer);
     }
 
     if widget_width > 0 {
-        let y = area.y + rows.len().min(2).saturating_sub(1) as u16;
+        let y = area.y;
         let mut x = area.right().saturating_sub(2 + widget_width as u16);
+        x = x.saturating_add(widget_gap as u16);
         if let Some(badge) = badge {
             let width = display_width(&badge);
             let color = match summary.and_then(|summary| summary.other_tabs_attention) {
@@ -923,7 +939,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         }
     }
 
-    if let Some((text, _)) = space_status_line(summary, spaces) {
+    if let Some((label, text, _)) = space_status_line(summary, spaces) {
         let y = area.y + rows.len() as u16;
         if y < area.bottom() {
             let x = if entry.indented {
@@ -931,16 +947,33 @@ pub(in crate::client::shell) fn render_workspace_rows(
             } else {
                 area.x.saturating_add(3)
             };
-            put_text(
-                buffer,
-                x,
-                y,
-                area.right().saturating_sub(2).saturating_sub(x),
-                &text,
-                Style::default()
-                    .fg(palette.overlay1)
-                    .add_modifier(Modifier::DIM),
-            );
+            let text_area = Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1);
+            let line = Line::from(vec![
+                ratatui::text::Span::styled(
+                    label.as_str(),
+                    Style::default()
+                        .fg(palette.mauve)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                ratatui::text::Span::raw(" · "),
+                ratatui::text::Span::styled(text.as_str(), Style::default().fg(palette.text)),
+            ]);
+            Paragraph::new(line).render(text_area, buffer);
+            if let Some(winner) =
+                summary
+                    .and_then(|summary| summary.winner.as_ref())
+                    .filter(|winner| {
+                        winner.status == crate::api::schema::AgentStatus::Idle
+                            && winner.agent.as_deref() == Some("omp")
+                            && winner.text.is_some()
+                    })
+            {
+                let text_x = x.saturating_add(display_width(&label)).saturating_add(3);
+                widgets.status_recap = Some((
+                    Rect::new(text_x, y, text_area.right().saturating_sub(text_x), 1),
+                    winner.pane_id.clone(),
+                ));
+            }
         }
     }
 

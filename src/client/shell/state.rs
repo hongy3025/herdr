@@ -95,6 +95,7 @@ pub(super) struct ShellHitMap {
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
+    pub(super) agent_recap_previews: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agents: Vec<(Rect, String)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
@@ -140,6 +141,7 @@ pub(super) struct ShellHitMap {
     pub(super) release_notes_scrollbar: Rect,
     pub(super) release_notes_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) release_notes_max_scroll: usize,
+    pub(super) agent_recap_max_scroll: usize,
 }
 
 #[derive(Clone)]
@@ -283,6 +285,7 @@ pub(super) enum ClientShellOverlayKind {
     Onboarding,
     ProductAnnouncement,
     ReleaseNotes,
+    AgentRecap,
     Rename,
     ConfirmClose,
     Help,
@@ -375,6 +378,12 @@ pub(super) struct ClientNavigatorOverlay {
 pub(super) struct ClientHelpOverlay {
     pub(super) query: TextEditor,
     pub(super) search_focused: bool,
+    pub(super) scroll: usize,
+}
+
+#[derive(Debug)]
+pub(super) struct ClientAgentRecapOverlay {
+    pub(super) text: String,
     pub(super) scroll: usize,
 }
 
@@ -586,6 +595,7 @@ pub(super) enum ClientShellOverlay {
     Onboarding,
     ProductAnnouncement(crate::app::state::ProductAnnouncementState),
     ReleaseNotes(crate::app::state::ReleaseNotesState),
+    AgentRecap(ClientAgentRecapOverlay),
     Rename(ClientRenameOverlay),
     ConfirmClose(ClientConfirmCloseOverlay),
     Help(ClientHelpOverlay),
@@ -604,6 +614,7 @@ impl ClientShellOverlay {
             Self::Onboarding => ClientShellOverlayKind::Onboarding,
             Self::ProductAnnouncement(_) => ClientShellOverlayKind::ProductAnnouncement,
             Self::ReleaseNotes(_) => ClientShellOverlayKind::ReleaseNotes,
+            Self::AgentRecap(_) => ClientShellOverlayKind::AgentRecap,
             Self::Rename(_) => ClientShellOverlayKind::Rename,
             Self::ConfirmClose(_) => ClientShellOverlayKind::ConfirmClose,
             Self::Help(_) => ClientShellOverlayKind::Help,
@@ -903,6 +914,9 @@ pub(crate) struct ClientShellState {
     pub(super) collapsed_endpoints: HashSet<ClientEndpointId>,
     pub(super) mode: ClientShellMode,
     pub(super) navigate_workspace_id: Option<WorkspaceNavigationTarget>,
+    /// Space row clicked with the mouse; keeps its agents linked until another
+    /// space is clicked (or the same one again).
+    pub(super) linked_workspace: Option<WorkspaceNavigationTarget>,
     pub(super) pending_workspace_highlight: Option<PendingWorkspaceHighlight>,
     pub(super) reveal_navigation_workspace: bool,
     pub(super) overlay: Option<ClientShellOverlay>,
@@ -1077,6 +1091,7 @@ impl ClientShellState {
             collapsed_endpoints: HashSet::new(),
             mode: ClientShellMode::Terminal,
             navigate_workspace_id: None,
+            linked_workspace: None,
             pending_workspace_highlight: None,
             reveal_navigation_workspace: false,
             overlay,

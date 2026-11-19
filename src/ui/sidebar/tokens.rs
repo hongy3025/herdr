@@ -281,6 +281,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                 theme,
                 theme,
                 theme,
+                theme,
                 &super::super::Palette::catppuccin(),
                 width,
             );

@@ -461,9 +461,9 @@ pub struct SpacesSidebarConfig {
     #[serde(deserialize_with = "deserialize_sidebar_rows")]
     pub rows: SpaceSidebarRows,
     pub row_gap: u16,
-    /// Show one status dot per pane of the workspace's active tab. Default: true.
+    /// Show one status dot per pane across all workspace tabs. Default: true.
     pub pane_strip: bool,
-    /// Show the winning agent's status text as a third Space row. Default: true.
+    /// Show the winning agent and status text as a third Space row. Default: true.
     pub status_text: bool,
 }
 
@@ -471,8 +471,12 @@ impl Default for SpacesSidebarConfig {
     fn default() -> Self {
         Self {
             rows: vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
-                vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
+                vec![
+                    SpaceSidebarToken::StateIcon,
+                    SpaceSidebarToken::Workspace,
+                    SpaceSidebarToken::GitStatus,
+                ],
+                vec![SpaceSidebarToken::Branch],
             ],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
             pane_strip: true,
@@ -512,8 +516,12 @@ mod tests {
         assert_eq!(
             config.spaces.rows,
             vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
-                vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
+                vec![
+                    SpaceSidebarToken::StateIcon,
+                    SpaceSidebarToken::Workspace,
+                    SpaceSidebarToken::GitStatus,
+                ],
+                vec![SpaceSidebarToken::Branch],
             ]
         );
         assert_eq!(config.spaces.row_gap, 0);

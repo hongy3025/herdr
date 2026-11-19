@@ -257,41 +257,59 @@ pub(crate) fn default_true() -> bool {
 }
 
 /// Maximum characters of agent status text exposed through the API and sidebar.
-pub(crate) const MAX_STATUS_MESSAGE_CHARS: usize = 200;
+pub(crate) const MAX_STATUS_MESSAGE_CHARS: usize = 8_192;
+const MAX_STATUS_MESSAGE_PREVIEW_CHARS: usize = 200;
 
 /// Collapse reported agent text into one printable line.
 ///
 /// Hook messages come from agent integrations and are rendered by clients, so
 /// control characters and line breaks never reach a status surface.
 pub(crate) fn normalize_status_message(raw: Option<&str>) -> Option<String> {
+    normalize_status_message_with_limit(raw, MAX_STATUS_MESSAGE_CHARS)
+}
+
+/// Normalize status text for compact, single-line sidebar previews.
+pub(crate) fn normalize_status_message_preview(raw: Option<&str>) -> Option<String> {
+    normalize_status_message_with_limit(raw, MAX_STATUS_MESSAGE_PREVIEW_CHARS)
+}
+
+fn normalize_status_message_with_limit(raw: Option<&str>, max_characters: usize) -> Option<String> {
     let raw = raw?;
-    let mut text = String::with_capacity(raw.len());
+    let mut text = String::with_capacity(raw.len().min(max_characters + 1));
     let mut pending_space = false;
+    let mut character_count = 0;
     for ch in raw.chars() {
         if ch.is_control() || ch.is_whitespace() {
             pending_space = true;
             continue;
         }
         if pending_space && !text.is_empty() {
+            if character_count == max_characters {
+                text.pop();
+                text.push('…');
+                return Some(text);
+            }
             text.push(' ');
+            character_count += 1;
         }
         pending_space = false;
+        if character_count == max_characters {
+            text.pop();
+            text.push('…');
+            return Some(text);
+        }
         text.push(ch);
+        character_count += 1;
     }
     if text.is_empty() {
         return None;
-    }
-    if text.chars().count() > MAX_STATUS_MESSAGE_CHARS {
-        let mut truncated: String = text.chars().take(MAX_STATUS_MESSAGE_CHARS).collect();
-        truncated.push('…');
-        return Some(truncated);
     }
     Some(text)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_status_message;
+    use super::{normalize_status_message, normalize_status_message_preview};
 
     #[test]
     fn status_messages_collapse_to_one_line() {
@@ -305,13 +323,34 @@ mod tests {
 
     #[test]
     fn long_status_messages_are_capped() {
-        let long = "word ".repeat(100);
+        let long = "x".repeat(9_000);
         let normalized = normalize_status_message(Some(&long)).unwrap();
 
-        assert_eq!(
-            normalized.chars().count(),
-            super::MAX_STATUS_MESSAGE_CHARS + 1
-        );
-        assert!(normalized.ends_with('…'));
+        assert_eq!(normalized, format!("{}…", "x".repeat(8_191)));
+        assert_eq!(normalized.chars().count(), 8_192);
+    }
+
+    #[test]
+    fn status_messages_exactly_at_the_limit_are_preserved() {
+        let message = "x".repeat(8_192);
+
+        assert_eq!(normalize_status_message(Some(&message)), Some(message));
+    }
+
+    #[test]
+    fn status_messages_preserve_full_recaps_above_the_old_limit() {
+        let recap = "x".repeat(512);
+
+        assert_eq!(normalize_status_message(Some(&recap)), Some(recap));
+    }
+
+    #[test]
+    fn status_message_previews_are_limited_to_200_characters() {
+        let message = "x".repeat(250);
+
+        let preview = normalize_status_message_preview(Some(&message)).unwrap();
+
+        assert_eq!(preview, format!("{}…", "x".repeat(199)));
+        assert_eq!(preview.chars().count(), 200);
     }
 }

@@ -249,6 +249,10 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             scroll: 0,
             preview: false,
         }),
+        ClientShellOverlay::AgentRecap(ClientAgentRecapOverlay {
+            text: "A full OMP recap".into(),
+            scroll: 0,
+        }),
         ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "rename",
             input: "name".into(),

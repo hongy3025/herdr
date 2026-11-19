@@ -862,6 +862,27 @@ impl ClientShellState {
             }
             return;
         }
+        if matches!(self.overlay, Some(ClientShellOverlay::AgentRecap(_))) {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left)
+                    if super::contains(self.hits.overlay_primary, point) =>
+                {
+                    self.overlay = None;
+                    self.chrome_drag = None;
+                    outcome.repaint = true;
+                }
+                MouseEventKind::ScrollUp => {
+                    self.scroll_agent_recap(-3);
+                    outcome.repaint = true;
+                }
+                MouseEventKind::ScrollDown => {
+                    self.scroll_agent_recap(3);
+                    outcome.repaint = true;
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.url_click_consumes_until_up {
             match mouse.kind {
                 MouseEventKind::Drag(MouseButton::Left) => return,
@@ -2130,6 +2151,21 @@ impl ClientShellState {
                     return;
                 }
                 if self.config.mouse_capture {
+                    let recap = self
+                        .hits
+                        .agent_recap_previews
+                        .iter()
+                        .find(|(rect, _, _)| super::contains(*rect, point))
+                        .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()));
+                    if let Some((endpoint_id, pane_id)) = recap {
+                        self.open_agent_recap(&endpoint_id, &pane_id);
+                        if self.overlay.is_some() {
+                            outcome.repaint = true;
+                            return;
+                        }
+                    }
+                }
+                if self.config.mouse_capture {
                     let dot = self
                         .hits
                         .workspace_pane_dots
@@ -2217,6 +2253,8 @@ impl ClientShellState {
                     .find(|(rect, _)| super::contains(*rect, point))
                     .map(|(_, pane_id)| pane_id.clone());
                 if let Some(pane_id) = agent_pane_id {
+                    let active_endpoint_id = self.active_endpoint_id.clone();
+                    self.link_agent_workspace(&active_endpoint_id, &pane_id, outcome);
                     self.push_endpoint_method(
                         crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
                             pane_id,

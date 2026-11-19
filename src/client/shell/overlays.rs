@@ -30,6 +30,7 @@ pub(crate) struct OverlayRender {
     pub(crate) release_notes_scrollbar: Rect,
     pub(crate) release_notes_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(crate) release_notes_max_scroll: usize,
+    pub(crate) agent_recap_max_scroll: usize,
     pub(crate) cursor: Option<crate::protocol::CursorState>,
 }
 
@@ -61,6 +62,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::ReleaseNotes(v) => {
             render_release_notes_overlay(b, v, &s.update_install_command, p)
         }
+        ClientShellOverlay::AgentRecap(v) => render_agent_recap_overlay(b, v, p),
         ClientShellOverlay::Rename(v) => render_rename_overlay(b, v, p),
         ClientShellOverlay::ConfirmClose(v) => render_confirm_close_overlay(b, v, p),
         ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, p),
@@ -417,6 +419,111 @@ fn render_release_notes_overlay(
         release_notes_scrollbar: track.unwrap_or_default(),
         release_notes_scroll_metrics: Some(metrics),
         release_notes_max_scroll: max_scroll,
+        ..OverlayRender::default()
+    })
+}
+
+fn render_agent_recap_overlay(
+    buffer: &mut Buffer,
+    recap: &ClientAgentRecapOverlay,
+    palette: &Palette,
+) -> Option<OverlayRender> {
+    let outer = popup(
+        buffer.area,
+        AGENT_RECAP_MODAL_SIZE.0,
+        AGENT_RECAP_MODAL_SIZE.1,
+    )?;
+    let inner = panel(buffer, outer, palette.accent, palette.panel_bg)?;
+    if inner.height < 8 || inner.width < 20 {
+        return Some(OverlayRender {
+            area: outer,
+            ..OverlayRender::default()
+        });
+    }
+
+    let stack = crate::ui::modal_stack_areas(inner, 2, 1, 0, 1);
+    let base = Style::default()
+        .bg(palette.panel_bg)
+        .remove_modifier(Modifier::DIM);
+    let title_area = Rect::new(
+        stack.header.x.saturating_add(1),
+        stack.header.y,
+        stack.header.width.saturating_sub(2),
+        1,
+    );
+    put_text(
+        buffer,
+        title_area.x,
+        title_area.y,
+        title_area.width,
+        "omp recap",
+        base.fg(palette.text).add_modifier(Modifier::BOLD),
+    );
+    let subtitle_area = Rect::new(
+        stack.header.x.saturating_add(1),
+        stack.header.y.saturating_add(1),
+        stack.header.width.saturating_sub(2),
+        1,
+    );
+    put_text(
+        buffer,
+        subtitle_area.x,
+        subtitle_area.y,
+        subtitle_area.width,
+        "full completion summary",
+        base.fg(palette.overlay1),
+    );
+    let close = crate::ui::release_notes_close_button_rect(Rect::new(
+        stack.header.x,
+        stack.header.y,
+        stack.header.width,
+        1,
+    ));
+    button(
+        buffer,
+        close,
+        " esc close ",
+        Style::default()
+            .fg(contrast(palette))
+            .bg(palette.accent)
+            .add_modifier(Modifier::BOLD)
+            .remove_modifier(Modifier::DIM),
+    );
+
+    let body = stack.content;
+    let paragraph = ratatui::widgets::Paragraph::new(recap.text.as_str())
+        .wrap(ratatui::widgets::Wrap { trim: false });
+    let max_scroll = paragraph
+        .line_count(body.width.max(1))
+        .saturating_sub(body.height.max(1) as usize);
+    let scroll = recap.scroll.min(max_scroll);
+    ratatui::widgets::Widget::render(
+        paragraph
+            .style(base.fg(palette.text))
+            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
+        body,
+        buffer,
+    );
+
+    if let Some(footer_area) = stack.footer {
+        let footer_line = ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled(" scroll ", base.fg(palette.overlay0)),
+            ratatui::text::Span::styled("wheel ↑↓", base.fg(palette.text)),
+            ratatui::text::Span::styled("  ·  ", base.fg(palette.overlay0)),
+            ratatui::text::Span::styled("close", base.fg(palette.overlay0)),
+            ratatui::text::Span::styled(" esc / enter ", base.fg(palette.text)),
+        ]);
+        ratatui::widgets::Widget::render(
+            ratatui::widgets::Paragraph::new(footer_line),
+            footer_area,
+            buffer,
+        );
+    }
+
+    Some(OverlayRender {
+        area: outer,
+        primary: close,
+        agent_recap_max_scroll: max_scroll,
         ..OverlayRender::default()
     })
 }

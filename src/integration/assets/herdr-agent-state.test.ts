@@ -649,8 +649,8 @@ test("Oh My Pi reports working intents and a completion preview", async () => {
   expect(requestMessages(requests)[4]).toBe("Working…");
 });
 
-test("Oh My Pi caps long completion previews to one line", async () => {
-  const requests = await startRecordingServer("omp-status-message-cap");
+test("Oh My Pi reports the full completion recap as idle status text", async () => {
+  const requests = await startRecordingServer("omp-full-status-message");
   process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
   const { handlers, pi } = createExtensionHarness();
 
@@ -674,12 +674,13 @@ test("Oh My Pi caps long completion previews to one line", async () => {
   await waitFor(() => requestMessages(requests).length === 2);
 
   idle = true;
+  const recap = "word ".repeat(200).trim();
   handlers.get("agent_end")?.(
     {
       messages: [
         {
           role: "assistant",
-          content: [{ type: "text", text: "word ".repeat(200) }],
+          content: [{ type: "text", text: recap }],
         },
       ],
     },
@@ -687,11 +688,49 @@ test("Oh My Pi caps long completion previews to one line", async () => {
   );
   await waitFor(() => requestMessages(requests).length === 3);
 
-  const preview = requestMessages(requests)[2];
-  expect(typeof preview).toBe("string");
-  expect(String(preview)).not.toContain("\n");
-  expect(String(preview).length).toBeLessThanOrEqual(202);
-  expect(String(preview).endsWith("…")).toBe(true);
+  expect(requestMessages(requests)[2]).toBe(recap);
+});
+
+test("Oh My Pi bounds completion status text at 8192 characters", async () => {
+  const requests = await startRecordingServer("omp-status-message-limit");
+  process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
+  const { handlers, pi } = createExtensionHarness();
+
+  const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+  install(pi);
+
+  let idle = true;
+  const context = {
+    hasUI: true,
+    isIdle: () => idle,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestMessages(requests).length === 1);
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  await waitFor(() => requestMessages(requests).length === 2);
+
+  idle = true;
+  handlers.get("agent_end")?.(
+    {
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "a".repeat(9_000) }],
+        },
+      ],
+    },
+    context,
+  );
+  await waitFor(() => requestMessages(requests).length === 3);
+
+  const message = requestMessages(requests)[2];
+  expect(message).toBe(`${"a".repeat(8_191)}…`);
+  expect([...message].length).toBe(8_192);
 });
 
 test("Pi retries working state after an unanswered socket attempt", async () => {

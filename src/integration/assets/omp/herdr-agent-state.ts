@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=omp
-// HERDR_INTEGRATION_VERSION=11
+// HERDR_INTEGRATION_VERSION=12
 // @ts-nocheck
 
 import net from "node:net";
@@ -256,11 +256,11 @@ function workingIntent(intent: unknown): string | undefined {
   );
 }
 
-const COMPLETION_PREVIEW_LIMIT = 200;
+const COMPLETION_MESSAGE_LIMIT = 8_192;
 
 // Assistant text only: thinking, tool calls, and tool results never become the
-// sidebar preview.
-function completionPreview(messages: unknown[]): string | undefined {
+// sidebar recap.
+function completionRecap(messages: unknown[]): string | undefined {
   const assistant = lastAssistantMessage(messages);
   const content = Array.isArray(assistant?.content) ? assistant.content : [];
   const text = content
@@ -272,9 +272,20 @@ function completionPreview(messages: unknown[]): string | undefined {
   if (!text) {
     return undefined;
   }
-  return text.length > COMPLETION_PREVIEW_LIMIT
-    ? `${text.slice(0, COMPLETION_PREVIEW_LIMIT)}…`
-    : text;
+  let end = 0;
+  let previewEnd = 0;
+  let characterCount = 0;
+  for (const character of text) {
+    if (characterCount === COMPLETION_MESSAGE_LIMIT) {
+      return `${text.slice(0, previewEnd)}…`;
+    }
+    end += character.length;
+    characterCount += 1;
+    if (characterCount < COMPLETION_MESSAGE_LIMIT) {
+      previewEnd = end;
+    }
+  }
+  return text;
 }
 
 export default function (pi) {
@@ -503,7 +514,7 @@ export default function (pi) {
     }
 
     agentActive = false;
-    completionMessage = completionPreview(Array.isArray(event?.messages) ? event.messages : []);
+    completionMessage = completionRecap(Array.isArray(event?.messages) ? event.messages : []);
 
     const retryableMessage = retryableErrorMessage(event);
     if (retryableMessage) {

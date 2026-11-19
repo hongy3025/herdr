@@ -858,7 +858,7 @@ fn workspace_state_text_does_not_stack_terminal_faint() {
 }
 
 #[test]
-fn agent_sidebar_status_message_adds_one_dim_line() {
+fn agent_sidebar_keeps_context_name_and_status_on_three_styled_lines() {
     let render = |message: Option<&str>| {
         let mut projected = snapshot();
         projected.agents = vec![ClientShellAgent {
@@ -902,11 +902,35 @@ fn agent_sidebar_status_message_adds_one_dim_line() {
         (frame, row)
     };
 
-    let (_frame, plain_row) = render(None);
+    let (plain_frame, plain_row) = render(None);
     let (frame, message_row) = render(Some("Run\nthe \u{1b}test suite"));
 
-    assert_eq!(message_row.height, plain_row.height + 1);
-    cell_symbol_position(&frame, message_row, "Run the test suite");
+    assert_eq!(plain_row.height, 3);
+    assert_eq!(message_row.height, 3);
+    assert_eq!(
+        cell_symbol_position(&frame, message_row, "client-shell").1,
+        message_row.y,
+        "the context line remains first"
+    );
+    assert_eq!(
+        cell_symbol_position(&frame, message_row, "reviewer").1,
+        message_row.y + 1
+    );
+    assert_eq!(
+        cell_symbol_position(&frame, message_row, "Run the test suite").1,
+        message_row.y + 2
+    );
+    cell_symbol_position(&plain_frame, plain_row, "working");
+
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+    let buffer = frame.to_ratatui_buffer().expect("agent sidebar buffer");
+    let (name_x, name_y) = cell_symbol_position(&frame, message_row, "reviewer");
+    let name_cell = buffer.cell((name_x, name_y)).expect("agent name cell");
+    assert_eq!(name_cell.fg, palette.mauve);
+    let (status_x, status_y) = cell_symbol_position(&frame, message_row, "Run the test suite");
+    let status_cell = buffer.cell((status_x, status_y)).expect("status text cell");
+    assert_eq!(status_cell.fg, palette.text);
+    assert!(!status_cell.modifier.contains(Modifier::DIM));
 }
 
 fn space_agent_snapshot() -> ClientShellSnapshot {
@@ -945,7 +969,17 @@ fn space_agent_snapshot() -> ClientShellSnapshot {
         ClientShellPane {
             pane_id: "pane_3".into(),
             workspace_id: "ws_1".into(),
-            tab_id: "tab_1".into(),
+            tab_id: "tab_2".into(),
+            label: None,
+            cwd: Some("/repo".into()),
+            foreground_cwd: Some("/repo".into()),
+            focused: false,
+            right_click_passthrough: false,
+        },
+        ClientShellPane {
+            pane_id: "pane_4".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_2".into(),
             label: None,
             cwd: Some("/repo".into()),
             foreground_cwd: Some("/repo".into()),
@@ -953,9 +987,15 @@ fn space_agent_snapshot() -> ClientShellSnapshot {
             right_click_passthrough: false,
         },
     ];
+    let mut pane_3_agent = space_agent("pane_3", AgentStatus::Working, None, "omp");
+    pane_3_agent.tab_id = "tab_2".into();
+    let mut pane_4_agent = space_agent("pane_4", AgentStatus::Idle, None, "omp");
+    pane_4_agent.tab_id = "tab_2".into();
     projected.agents = vec![
         space_agent("pane_1", AgentStatus::Working, Some("Run tests"), "codex"),
         space_agent("pane_2", AgentStatus::Blocked, None, "omp"),
+        pane_3_agent,
+        pane_4_agent,
     ];
     projected
 }
@@ -972,7 +1012,7 @@ fn space_agent(
         tab_id: "tab_1".into(),
         name: None,
         display_agent: Some(name.into()),
-        agent: Some("omp".into()),
+        agent: Some(name.into()),
         title: None,
         terminal_title: None,
         terminal_title_stripped: None,
@@ -1008,9 +1048,13 @@ fn send_space_status_messages(
 
 #[test]
 fn space_row_shows_winning_status_text_and_pane_widgets() {
-    let projected = space_agent_snapshot();
+    let mut projected = space_agent_snapshot();
+    projected.workspaces[0].branch = Some("feature/sidebar-layout".into());
+    projected.workspaces[0].git_ahead_behind = Some((2, 1));
     let (boot_id, revision) = (projected.boot_id.clone(), projected.revision);
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut config = Config::default();
+    config.ui.sidebar_width = 30;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     send_space_status_messages(
         &mut state,
         boot_id,
@@ -1024,29 +1068,65 @@ fn space_row_shows_winning_status_text_and_pane_widgets() {
     let rect = state.hits.workspaces.first().expect("workspace row").rect;
 
     assert_eq!(rect.height, 3);
-    cell_symbol_position(&frame, rect, "omp · Need approval");
-    assert_eq!(state.hits.workspace_pane_dots.len(), 3);
-    assert!(state.hits.workspace_tab_badges.len() == 1);
-    cell_symbol_position(&frame, rect, "×");
-    cell_symbol_position(&frame, rect, "◐");
+    assert_eq!(
+        cell_symbol_position(&frame, rect, "feature/sidebar-layout").1,
+        rect.y + 1,
+        "branch occupies the second row without reserving first-row widget space"
+    );
+    assert_eq!(cell_symbol_position(&frame, rect, "↑2").1, rect.y);
+    assert_eq!(cell_symbol_position(&frame, rect, "↓1").1, rect.y);
+    assert_eq!(
+        cell_symbol_position(&frame, rect, "omp · Need approval").1,
+        rect.y + 2
+    );
+    let buffer = frame.to_ratatui_buffer().expect("sidebar buffer");
+    let (agent_x, agent_y) = cell_symbol_position(&frame, rect, "omp");
+    assert_eq!(
+        buffer.cell((agent_x, agent_y)).expect("agent label").fg,
+        state.config.palette.mauve
+    );
+    let (status_x, status_y) = cell_symbol_position(&frame, rect, "Need approval");
+    let status_cell = buffer.cell((status_x, status_y)).expect("status text");
+    assert_eq!(status_cell.fg, state.config.palette.text);
+    assert!(!status_cell.modifier.contains(Modifier::DIM));
+    assert_eq!(state.hits.workspace_pane_dots.len(), 4);
+    assert_eq!(state.hits.workspace_tab_badges.len(), 1);
+    assert!(
+        state
+            .hits
+            .workspace_pane_dots
+            .iter()
+            .all(|(dot, _, _)| dot.y == rect.y),
+        "pane status icons belong to the first row"
+    );
+    assert_eq!(state.hits.workspace_tab_badges[0].0.y, rect.y);
 }
 
 #[test]
-fn space_row_hides_status_text_for_idle_winners_and_disabled_config() {
+fn space_row_shows_idle_agent_without_stale_text_and_honors_disable() {
     let mut projected = space_agent_snapshot();
     projected.agents = vec![space_agent(
         "pane_1",
         AgentStatus::Idle,
         Some("Done earlier"),
-        "omp",
+        "codex",
     )];
     let (boot_id, revision) = (projected.boot_id.clone(), projected.revision);
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     send_space_status_messages(&mut state, boot_id, revision, &[("pane_1", "Done earlier")]);
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
-    state.compose(106, 30).expect("sidebar frame");
-    assert_eq!(state.hits.workspaces[0].rect.height, 2);
+    let frame = state.compose(106, 30).expect("sidebar frame");
+    let rect = state.hits.workspaces[0].rect;
+    assert_eq!(rect.height, 3);
+    cell_symbol_position(&frame, rect, "codex · idle");
+    let lines = frame_rows(&frame);
+    assert!(
+        !lines[rect.y as usize..rect.bottom() as usize]
+            .iter()
+            .any(|line| line.contains("Done earlier")),
+        "idle status must not reuse an old agent message"
+    );
 
     let mut config = Config::default();
     config.ui.sidebar.spaces.status_text = false;
@@ -1062,6 +1142,224 @@ fn space_row_hides_status_text_for_idle_winners_and_disabled_config() {
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("sidebar frame");
+    assert_eq!(state.hits.workspaces[0].rect.height, 2);
+}
+
+#[test]
+fn space_row_shows_recap_for_idle_omp_agent() {
+    let mut projected = space_agent_snapshot();
+    projected.agents = vec![space_agent(
+        "pane_1",
+        AgentStatus::Idle,
+        Some("Omp recap"),
+        "omp",
+    )];
+    let (boot_id, revision) = (projected.boot_id.clone(), projected.revision);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    send_space_status_messages(&mut state, boot_id, revision, &[("pane_1", "Omp recap")]);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("sidebar frame");
+    let row = state.hits.workspaces[0].rect;
+
+    cell_symbol_position(&frame, row, "omp · Omp recap");
+    assert_eq!(row.height, 3);
+}
+
+#[test]
+fn agent_sidebar_keeps_long_omp_recap_as_short_inline_preview() {
+    let recap = format!("Omp recap: {}", "details ".repeat(100));
+    let mut projected = space_agent_snapshot();
+    projected.agents = vec![space_agent(
+        "pane_1",
+        AgentStatus::Idle,
+        Some(&recap),
+        "omp",
+    )];
+    let config = ClientShellConfig::from_config(&Config::default());
+
+    let row = super::super::agent_sidebar::agent_row(&projected, "pane_1", &config, None)
+        .expect("OMP agent row");
+    let preview = row.status_message.expect("recap preview");
+
+    assert_eq!(preview.chars().count(), 200);
+    assert!(preview.ends_with('…'));
+}
+
+#[test]
+fn space_omp_recap_preview_opens_scrollable_full_details() {
+    let recap = format!("Omp recap: {} END_OF_OMP_RECAP", "details ".repeat(900));
+    let mut projected = space_agent_snapshot();
+    projected.agents = vec![space_agent(
+        "pane_1",
+        AgentStatus::Idle,
+        Some(&recap),
+        "omp",
+    )];
+    let (boot_id, revision) = (projected.boot_id.clone(), projected.revision);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    send_space_status_messages(&mut state, boot_id, revision, &[("pane_1", &recap)]);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("sidebar frame");
+    let row = state.hits.workspaces[0].rect;
+    let (column, status_row) = cell_symbol_position(&frame, row, "Omp recap:");
+    let input = click_space_widget(&mut state, column, status_row);
+
+    assert!(
+        input.actions.is_empty(),
+        "opening a recap must not focus or mutate a workspace"
+    );
+    assert!(
+        state.overlay.is_some(),
+        "clicking the inline recap should open its full-text overlay"
+    );
+    assert!(
+        matches!(
+            state.overlay.as_ref(),
+            Some(ClientShellOverlay::AgentRecap(recap))
+                if recap.text.ends_with("END_OF_OMP_RECAP")
+        ),
+        "the overlay state should retain the full recap before scrolling"
+    );
+
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::End,
+        KeyModifiers::empty(),
+    ))]);
+    let details = state.compose(106, 30).expect("recap detail overlay");
+    assert!(
+        frame_rows(&details).join("\n").contains("END_OF_OMP_RECAP"),
+        "the overlay should scroll to the full recap's final text"
+    );
+
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Esc,
+        KeyModifiers::empty(),
+    ))]);
+    assert!(state.overlay.is_none(), "escape closes the recap overlay");
+}
+
+#[test]
+fn agent_sidebar_omp_recap_preview_opens_full_details() {
+    let recap = "Omp recap: details beyond the inline preview END_OF_OMP_RECAP";
+    let mut projected = snapshot();
+    projected.agents = vec![ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("omp".into()),
+        display_agent: Some("omp".into()),
+        agent: Some("omp".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+        status_message: None,
+    }];
+    let (boot_id, revision) = (projected.boot_id.clone(), projected.revision);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.endpoints[0]
+        .agent_presentation
+        .receive_status_messages(
+            None,
+            crate::protocol::endpoint::EndpointAgentStatusMessages {
+                boot_id,
+                revision,
+                messages: [("pane_1".into(), recap.to_string())].into_iter().collect(),
+            },
+        );
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let row = state.hits.agents[0].0;
+    let (column, status_row) = cell_symbol_position(&frame, row, "Omp recap:");
+    let input = click_space_widget(&mut state, column, status_row);
+
+    assert!(input.actions.is_empty());
+    assert!(
+        state.overlay.is_some(),
+        "clicking the agent status should open its full recap"
+    );
+    let details = state.compose(106, 30).expect("recap detail overlay");
+    assert!(
+        frame_rows(&details).join("\n").contains("END_OF_OMP_RECAP"),
+        "the overlay should display the full agent recap"
+    );
+}
+
+#[test]
+fn agent_sidebar_omp_recap_click_uses_status_row_after_empty_template() {
+    let recap = "Omp recap: fallback row details";
+    let mut projected = snapshot();
+    projected.agents = vec![ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("omp".into()),
+        display_agent: Some("omp".into()),
+        agent: Some("omp".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+        status_message: None,
+    }];
+    let (boot_id, revision) = (projected.boot_id.clone(), projected.revision);
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Custom(
+        "missing".into(),
+    )]];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.endpoints[0]
+        .agent_presentation
+        .receive_status_messages(
+            None,
+            crate::protocol::endpoint::EndpointAgentStatusMessages {
+                boot_id,
+                revision,
+                messages: [("pane_1".into(), recap.into())].into_iter().collect(),
+            },
+        );
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let row = state.hits.agents[0].0;
+    assert_eq!(row.height, 2, "the empty template renders a fallback row");
+    let (column, status_row) = cell_symbol_position(&frame, row, "Omp recap:");
+    assert_eq!(status_row, row.y + 1);
+    let input = click_space_widget(&mut state, column, status_row);
+
+    assert!(
+        input.actions.is_empty(),
+        "a recap click must not focus its pane"
+    );
+    assert!(
+        matches!(state.overlay, Some(ClientShellOverlay::AgentRecap(_))),
+        "the rendered status line opens its recap even with a fallback row"
+    );
+}
+
+#[test]
+fn space_row_has_no_agent_line_without_an_associated_agent() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+
+    state.compose(106, 30).expect("sidebar frame");
+
     assert_eq!(state.hits.workspaces[0].rect.height, 2);
 }
 
@@ -1086,7 +1384,7 @@ fn space_row_single_pane_has_no_strip_or_badge() {
     assert_eq!(rect.height, 3);
     assert!(state.hits.workspace_pane_dots.is_empty());
     assert!(state.hits.workspace_tab_badges.is_empty());
-    cell_symbol_position(&frame, rect, "Run tests");
+    cell_symbol_position(&frame, rect, "codex · Run tests");
 }
 
 fn click_space_widget(state: &mut ClientShellState, column: u16, row: u16) -> ClientShellInput {
@@ -1139,10 +1437,9 @@ fn selected_space_highlights_its_agent_rows() {
     let mut config = Config::default();
     config.ui.sidebar_width = 30;
     let shell_config = ClientShellConfig::from_config(&config);
-    let (surface1, active_bg) = (
-        crate::protocol::color_to_u32(shell_config.palette.surface1),
-        crate::protocol::color_to_u32(shell_config.palette.active_row_bg),
-    );
+    let linked_bg = crate::protocol::color_to_u32(super::sidebar::workspace_selection_background(
+        &shell_config.palette,
+    ));
     let mut projected = space_agent_snapshot();
     projected.agents[0].focused = true;
     let mut state = ClientShellState::new(shell_config);
@@ -1159,20 +1456,186 @@ fn selected_space_highlights_its_agent_rows() {
         agent_rects[0].y as usize * before.width as usize + agent_rects[0].x as usize + 1;
     let related_index =
         agent_rects[1].y as usize * before.width as usize + agent_rects[1].x as usize + 1;
-    assert_ne!(before.cells[related_index].bg, surface1);
+    assert_ne!(before.cells[related_index].bg, linked_bg);
 
     state.mode = ClientShellMode::Navigate;
     state.navigate_workspace_id = state.navigation_target(&ClientEndpointId::Local, "ws_1");
     let after = state.compose(106, 30).expect("sidebar frame");
 
     assert_eq!(
-        after.cells[focused_index].bg, active_bg,
-        "focused agent keeps the focused background"
+        after.cells[focused_index].bg, linked_bg,
+        "focused agent uses the same background as other linked rows"
     );
     assert_eq!(
-        after.cells[related_index].bg, surface1,
+        after.cells[related_index].bg, linked_bg,
         "related agent rows take the linkage background"
     );
+}
+
+fn click_space_row(state: &mut ClientShellState, column: u16, row: u16) {
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        },
+    )]);
+    state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        },
+    )]);
+}
+
+#[test]
+fn clicking_a_space_links_its_agents_until_clicked_again() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let linked_bg = crate::protocol::color_to_u32(super::sidebar::workspace_selection_background(
+        &state.config.palette,
+    ));
+    state.set_snapshot(Box::new(space_agent_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("sidebar frame");
+    let rect = state.hits.workspaces[0].rect;
+    let agents = state
+        .hits
+        .agents
+        .iter()
+        .map(|(rect, _)| *rect)
+        .collect::<Vec<_>>();
+
+    click_space_row(&mut state, rect.x + 1, rect.y + 1);
+    let linked = state.compose(106, 30).expect("sidebar frame");
+    for agent in &agents {
+        let index = agent.y as usize * linked.width as usize + agent.x as usize + 2;
+        assert_eq!(linked.cells[index].bg, linked_bg, "linked agent row");
+    }
+
+    click_space_row(&mut state, rect.x + 1, rect.y + 1);
+    let unlinked = state.compose(106, 30).expect("sidebar frame");
+    for agent in &agents {
+        let index = agent.y as usize * unlinked.width as usize + agent.x as usize + 2;
+        assert_ne!(unlinked.cells[index].bg, linked_bg, "second click unlinks");
+    }
+}
+
+#[test]
+fn clicking_an_agent_relinks_the_space_and_clears_unrelated_rows() {
+    let mut projected = snapshot();
+    projected
+        .workspaces
+        .push(crate::protocol::ClientShellWorkspace {
+            workspace_id: "ws_2".into(),
+            active_tab_id: "tab_2".into(),
+            new_workspace_cwd: "/other".into(),
+            number: 2,
+            label: "other".into(),
+            custom_label: false,
+            branch: None,
+            git_ahead_behind: None,
+            tokens: Vec::new(),
+            worktree: None,
+            focused: false,
+            agent_status: AgentStatus::Blocked,
+        });
+    projected.tabs.push(ClientShellTab {
+        tab_id: "tab_2".into(),
+        workspace_id: "ws_2".into(),
+        number: 1,
+        label: "1".into(),
+        custom_label: false,
+        zoomed: false,
+        focused: false,
+        agent_status: AgentStatus::Blocked,
+    });
+    projected.panes = vec![
+        ClientShellPane {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            label: None,
+            cwd: Some("/repo".into()),
+            foreground_cwd: Some("/repo".into()),
+            focused: true,
+            right_click_passthrough: false,
+        },
+        ClientShellPane {
+            pane_id: "pane_2".into(),
+            workspace_id: "ws_2".into(),
+            tab_id: "tab_2".into(),
+            label: None,
+            cwd: Some("/other".into()),
+            foreground_cwd: Some("/other".into()),
+            focused: false,
+            right_click_passthrough: false,
+        },
+    ];
+    let mut second_agent = space_agent("pane_2", AgentStatus::Blocked, None, "codex");
+    second_agent.workspace_id = "ws_2".into();
+    second_agent.tab_id = "tab_2".into();
+    projected.agents = vec![
+        space_agent("pane_1", AgentStatus::Working, None, "omp"),
+        second_agent,
+    ];
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let linked_bg = crate::protocol::color_to_u32(super::sidebar::workspace_selection_background(
+        &state.config.palette,
+    ));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("sidebar frame");
+    let first_space = state.hits.workspaces[0].rect;
+    let agents = state
+        .hits
+        .agents
+        .iter()
+        .map(|(rect, _)| *rect)
+        .collect::<Vec<_>>();
+    let cell = |frame: &crate::client::frame_output::ComposedFrame, rect: Rect| {
+        frame.cells[rect.y as usize * frame.width as usize + rect.x as usize + 2].bg
+    };
+    let space_cell = |frame: &crate::client::frame_output::ComposedFrame, rect: Rect| {
+        frame.cells[rect.y as usize * frame.width as usize + rect.x as usize].bg
+    };
+
+    click_space_row(&mut state, first_space.x + 1, first_space.y + 1);
+    let first_link = state.compose(106, 30).expect("sidebar frame");
+    assert_eq!(cell(&first_link, agents[0]), linked_bg);
+
+    click_space_widget(&mut state, agents[1].x + 1, agents[1].y);
+    let second_link = state.compose(106, 30).expect("sidebar frame");
+    let second_space = state.hits.workspaces[1].rect;
+
+    assert_eq!(cell(&second_link, agents[1]), linked_bg);
+    assert_ne!(cell(&second_link, agents[0]), linked_bg);
+    assert_eq!(space_cell(&second_link, second_space), linked_bg);
+    assert_ne!(space_cell(&second_link, first_space), linked_bg);
+}
+
+#[test]
+fn focused_agent_row_shows_green_activation_bar() {
+    let mut projected = space_agent_snapshot();
+    projected.agents[0].focused = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let green = state.config.palette.green;
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("sidebar frame");
+    let buffer = frame.to_ratatui_buffer().expect("agent sidebar buffer");
+    let focused = state.hits.agents[0].0;
+    let other = state.hits.agents[1].0;
+
+    let bar = buffer.cell((focused.x, focused.y)).expect("bar cell");
+    assert_eq!(bar.symbol(), "▍");
+    assert_eq!(bar.fg, green);
+    let plain = buffer.cell((other.x, other.y)).expect("plain cell");
+    assert_ne!(plain.symbol(), "▍");
 }
 
 #[test]

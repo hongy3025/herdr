@@ -35,6 +35,18 @@ impl ClientShellState {
         press: ClientWorkspacePress,
         outcome: &mut ClientShellInput,
     ) {
+        if let Some(target) = self.navigation_target(&press.endpoint_id, &press.workspace_id) {
+            if self
+                .linked_workspace
+                .as_ref()
+                .is_some_and(|current| current == &target)
+            {
+                self.linked_workspace = None;
+            } else {
+                self.linked_workspace = Some(target);
+            }
+            outcome.repaint = true;
+        }
         self.focus_or_activate(
             press.endpoint_id,
             ClientEndpointFocusTarget::Workspace(press.workspace_id),
@@ -95,12 +107,47 @@ impl ClientShellState {
         else {
             return false;
         };
+        self.link_agent_workspace(&endpoint_id, &pane_id, outcome);
         self.focus_or_activate(
             endpoint_id,
             ClientEndpointFocusTarget::Pane(pane_id),
             outcome,
         );
         true
+    }
+
+    /// Keep the click-to-link selection on the workspace that owns `pane_id`.
+    pub(super) fn link_agent_workspace(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        pane_id: &str,
+        outcome: &mut ClientShellInput,
+    ) {
+        let workspace_id = self
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.snapshot.as_deref())
+            .or_else(|| {
+                endpoint_id
+                    .is_local()
+                    .then_some(self.snapshot.as_deref())
+                    .flatten()
+            })
+            .and_then(|snapshot| {
+                snapshot
+                    .agents
+                    .iter()
+                    .find(|agent| agent.pane_id == pane_id)
+            })
+            .map(|agent| agent.workspace_id.clone());
+        let Some(workspace_id) = workspace_id else {
+            return;
+        };
+        if let Some(target) = self.navigation_target(endpoint_id, &workspace_id) {
+            self.linked_workspace = Some(target);
+            outcome.repaint = true;
+        }
     }
 
     pub(super) fn handle_endpoint_navigation(

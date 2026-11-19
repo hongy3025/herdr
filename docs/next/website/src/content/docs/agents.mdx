@@ -158,13 +158,22 @@ Agent sidebar rows can also opt into `terminal_title` or `terminal_title_strippe
 
 `herdr pane report-agent` accepts `--message TEXT` for one line of live status text. The agent sidebar renders it below the configured rows and keeps the state icon and label unchanged. Herdr collapses the text to one printable line, and a later report without `--message` clears it.
 
-The bundled Oh My Pi integration reports the current tool intent while working and a preview of the final assistant reply once the turn settles.
+The bundled Oh My Pi integration reports the current tool intent while working. When the turn settles, it reports the final assistant reply as the idle status message. The sidebar shows a compact preview; click it to open a scrollable view of the recap, up to 8,192 characters.
 
-Expanded Space rows summarize their panes too: one status dot per pane of the
-active tab, a tab-count badge colored by the strongest status in other tabs, and
-the winning agent's status text as an extra line (`blocked`, then `done`, then
-`working`). Selecting a space highlights its agents in the Agents panel, whose
-ordering and interaction stay unchanged.
+Expanded Space rows use the first line for the directory, git sync counts, a
+tab-count badge, and one status dot per pane across all tabs; changing the
+active tab or pane does not change the set. The branch has its own second line.
+When any pane has an associated agent, a third line shows the highest-priority
+agent's name and status text (`blocked`, then `done`, `working`, `idle`, and
+`unknown`); idle and unknown agents use the state label instead of an old
+status message. Agent names use the accent color, while status text uses the
+brighter text color. The tab-count badge remains colored by the strongest
+status in other tabs. Clicking a space keeps its agents highlighted in the
+Agents panel until another space (or the same one) is clicked, and the agent
+whose pane has focus carries a green activation marker. Clicking an agent
+there moves the linkage to that agent's workspace. Each Agents entry retains
+its context line, followed by the agent name and status text on separate lines.
+Ordering and interaction in the panel stay unchanged.
 
 ## Attach directly to an agent
 

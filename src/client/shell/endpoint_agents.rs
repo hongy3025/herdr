@@ -84,6 +84,15 @@ pub(super) fn render_expanded(
                         .add_modifier(Modifier::DIM),
                 );
             }
+            if config.mouse_capture {
+                if let Some(status_rect) = row.agent.recap_hit_rect(rect) {
+                    hits.agent_recap_previews.push((
+                        status_rect,
+                        row.endpoint_id.clone(),
+                        row.agent.pane_id.clone(),
+                    ));
+                }
+            }
             hits.endpoint_agents
                 .push((rect, row.endpoint_id.clone(), row.agent.pane_id.clone()));
         },

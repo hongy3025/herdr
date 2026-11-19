@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::api::schema::AgentStatus;
 use crate::protocol::{ClientShellAgent, ClientShellSnapshot};
 
-/// One pane in the active tab's status strip.
+/// One pane in a workspace's status strip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneDot {
     pub pane_id: String,
@@ -15,6 +15,7 @@ pub(crate) struct PaneDot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WinnerAgent {
     pub pane_id: String,
+    pub agent: Option<String>,
     pub label: String,
     pub status: AgentStatus,
     pub text: Option<String>,
@@ -24,9 +25,8 @@ pub(crate) struct WinnerAgent {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct WorkspaceAgentSummary {
     pub winner: Option<WinnerAgent>,
-    pub active_tab_dots: Vec<PaneDot>,
+    pub pane_dots: Vec<PaneDot>,
     pub other_tabs_attention: Option<AgentStatus>,
-    pub agent_count: usize,
 }
 
 pub(crate) fn workspace_summaries(
@@ -67,7 +67,6 @@ pub(crate) fn workspace_summaries(
         let Some(summary) = summaries.get_mut(agent.workspace_id.as_str()) else {
             continue;
         };
-        summary.agent_count += 1;
         let in_active_tab = agent.tab_id == active_tab;
         if !in_active_tab
             && summary.other_tabs_attention.is_none_or(|current| {
@@ -101,9 +100,10 @@ pub(crate) fn workspace_summaries(
         };
         summary.winner = Some(WinnerAgent {
             pane_id: candidate.agent.pane_id.clone(),
+            agent: candidate.agent.agent.clone(),
             label,
             status: candidate.agent.agent_status,
-            text: crate::api::schema::common::normalize_status_message(
+            text: crate::api::schema::common::normalize_status_message_preview(
                 candidate.agent.status_message.as_deref(),
             ),
         });
@@ -115,12 +115,6 @@ pub(crate) fn workspace_summaries(
         .map(|agent| (agent.pane_id.as_str(), agent.agent_status))
         .collect::<HashMap<_, _>>();
     for pane in &snapshot.panes {
-        let Some(active_tab) = active_tabs.get(pane.workspace_id.as_str()).copied() else {
-            continue;
-        };
-        if pane.tab_id != active_tab {
-            continue;
-        }
         let Some(summary) = summaries.get_mut(pane.workspace_id.as_str()) else {
             continue;
         };
@@ -128,7 +122,7 @@ pub(crate) fn workspace_summaries(
             .winner
             .as_ref()
             .is_some_and(|winner| winner.pane_id == pane.pane_id);
-        summary.active_tab_dots.push(PaneDot {
+        summary.pane_dots.push(PaneDot {
             pane_id: pane.pane_id.clone(),
             status: agent_statuses.get(pane.pane_id.as_str()).copied(),
             winner,
@@ -379,33 +373,68 @@ mod tests {
     }
 
     #[test]
-    fn dots_cover_active_tab_panes_and_mark_the_winner() {
+    fn dots_cover_every_workspace_tab_and_ignore_the_active_tab() {
         let mut snapshot = snapshot();
         snapshot.workspaces[0].active_tab_id = "tab_1".into();
         snapshot.panes = vec![
             pane("pane_a", "ws_1", "tab_1"),
             pane("pane_bare", "ws_1", "tab_1"),
             pane("pane_c", "ws_1", "tab_2"),
+            pane("pane_d", "ws_1", "tab_2"),
         ];
-        snapshot.agents = vec![agent(
-            "pane_a",
-            "ws_1",
-            "tab_1",
-            AgentStatus::Working,
-            false,
-            Some("Run tests"),
-            None,
-        )];
+        snapshot.agents = vec![
+            agent(
+                "pane_a",
+                "ws_1",
+                "tab_1",
+                AgentStatus::Working,
+                false,
+                Some("Run tests"),
+                None,
+            ),
+            agent(
+                "pane_c",
+                "ws_1",
+                "tab_2",
+                AgentStatus::Blocked,
+                false,
+                None,
+                None,
+            ),
+            agent(
+                "pane_d",
+                "ws_1",
+                "tab_2",
+                AgentStatus::Done,
+                false,
+                None,
+                None,
+            ),
+        ];
 
-        let dots = &workspace_summaries(&snapshot)["ws_1"].active_tab_dots;
+        let dots = &workspace_summaries(&snapshot)["ws_1"].pane_dots;
 
-        assert_eq!(dots.len(), 2);
+        assert_eq!(dots.len(), 4);
         assert_eq!(dots[0].pane_id, "pane_a");
         assert_eq!(dots[0].status, Some(AgentStatus::Working));
-        assert!(dots[0].winner);
+        assert!(!dots[0].winner);
         assert_eq!(dots[1].pane_id, "pane_bare");
         assert_eq!(dots[1].status, None);
         assert!(!dots[1].winner);
+        assert_eq!(dots[2].pane_id, "pane_c");
+        assert_eq!(dots[2].status, Some(AgentStatus::Blocked));
+        assert!(dots[2].winner);
+        assert_eq!(dots[3].pane_id, "pane_d");
+        assert_eq!(dots[3].status, Some(AgentStatus::Done));
+        assert!(!dots[3].winner);
+
+        let dots_before_tab_switch = dots.clone();
+        snapshot.workspaces[0].active_tab_id = "tab_2".into();
+        assert_eq!(
+            workspace_summaries(&snapshot)["ws_1"].pane_dots,
+            dots_before_tab_switch,
+            "pane indicators stay stable when the active tab changes"
+        );
     }
 
     #[test]
@@ -511,6 +540,5 @@ mod tests {
             summaries["ws_child"].winner.as_ref().unwrap().pane_id,
             "pane_child"
         );
-        assert_eq!(summaries["ws_1"].agent_count, 1);
     }
 }

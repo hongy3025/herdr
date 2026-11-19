@@ -68,6 +68,8 @@ use crate::protocol::{
 #[cfg(test)]
 use crate::raw_input::RawInputEvent;
 
+const AGENT_RECAP_MODAL_SIZE: (u16, u16) = (72, 20);
+
 fn target_event_message(target: ClientInputTarget, event: ClientPaneInputEvent) -> ClientMessage {
     match target {
         ClientInputTarget::Pane(pane_id) => ClientMessage::ClientShellPaneInput {
