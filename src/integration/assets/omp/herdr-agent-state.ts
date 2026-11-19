@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=omp
-// HERDR_INTEGRATION_VERSION=12
+// HERDR_INTEGRATION_VERSION=13
 // @ts-nocheck
 
 import net from "node:net";
@@ -313,9 +313,9 @@ function latestIdleRecap(sessionId: string): { id: number; recap: string } | und
   let db: Database | undefined;
   try {
     db = new Database(path.join(dataDir, "history.db"), { readonly: true, create: false });
-    return db.query(
+    return (db.query(
       "SELECT id, recap FROM session_recaps WHERE session_id = ? ORDER BY id DESC LIMIT 1",
-    ).get(sessionId) as { id: number; recap: string } | undefined;
+    ).get(sessionId) as { id: number; recap: string } | null) ?? undefined;
   } catch {
     return null;
   } finally {

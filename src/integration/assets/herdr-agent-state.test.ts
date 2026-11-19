@@ -652,12 +652,14 @@ test("Oh My Pi reports working intents and a completion preview", async () => {
   expect(requestMessages(requests)[4]).toBe("Working…");
 });
 
-test("Oh My Pi replaces the assistant reply with the later idle recap", async () => {
+test.each([false, true])("Oh My Pi reports a later idle recap (prior recap: %s)", async (hasPriorRecap) => {
   const directory = await mkdtemp(join(tmpdir(), "herdr-omp-recap-"));
   const db = new Database(join(directory, "history.db"));
   db.run("PRAGMA journal_mode=WAL");
   db.run("CREATE TABLE session_recaps (id INTEGER PRIMARY KEY, session_id TEXT, recap TEXT)");
-  db.run("INSERT INTO session_recaps VALUES (1, 'session-a', 'old recap')");
+  if (hasPriorRecap) {
+    db.run("INSERT INTO session_recaps VALUES (1, 'session-a', 'old recap')");
+  }
   try {
     const requests = await startRecordingServer("omp-idle-recap");
     process.env.PI_CODING_AGENT_DIR = directory;
