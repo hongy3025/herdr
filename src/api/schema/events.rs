@@ -408,6 +408,9 @@ pub struct PaneAgentStatusChangedEvent {
     pub display_agent: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub state_labels: HashMap<String, String>,
+    /// One-line agent status text reported by the agent integration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -549,6 +552,9 @@ pub enum EventData {
         display_agent: Option<String>,
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         state_labels: HashMap<String, String>,
+        /// One-line agent status text reported by the agent integration.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_message: Option<String>,
     },
     LayoutUpdated {
         layout: super::panes::PaneLayoutSnapshot,

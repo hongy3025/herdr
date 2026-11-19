@@ -253,6 +253,7 @@ impl ClientShellState {
                             ClientShellOverlay::Onboarding
                                 | ClientShellOverlay::ProductAnnouncement(_)
                                 | ClientShellOverlay::ReleaseNotes(_)
+                                | ClientShellOverlay::AgentRecap(_)
                         )
                     ) {
                         self.reconcile_input_source();
@@ -286,6 +287,7 @@ impl ClientShellState {
                             ClientShellOverlay::Onboarding
                                 | ClientShellOverlay::ProductAnnouncement(_)
                                 | ClientShellOverlay::ReleaseNotes(_)
+                                | ClientShellOverlay::AgentRecap(_)
                         )
                     ) {
                         self.reconcile_input_source();

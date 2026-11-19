@@ -12,9 +12,37 @@ use super::*;
 
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
+    pub(super) workspace_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    /// Live status text or the agent's localized state label.
+    pub(super) status_message: Option<String>,
+    pub(super) status_text: String,
+    pub(super) is_omp_idle_recap: bool,
+}
+
+impl AgentRow {
+    pub(super) fn line_count(&self) -> usize {
+        self.rows.len().max(1) + 1
+    }
+
+    pub(super) fn recap_hit_rect(&self, rect: Rect) -> Option<Rect> {
+        if !self.is_omp_idle_recap || self.status_message.is_none() {
+            return None;
+        }
+        let status_row = self.rows.len().max(1);
+        if status_row >= rect.height as usize {
+            return None;
+        }
+        let gutter = 1.min(rect.width);
+        Some(Rect::new(
+            rect.x.saturating_add(gutter),
+            rect.y.saturating_add(status_row as u16),
+            rect.width.saturating_sub(gutter),
+            1,
+        ))
+    }
 }
 
 pub(super) fn ordered_agent_pane_ids(
@@ -54,6 +82,7 @@ pub(super) fn render_agent_panel(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    selected: Option<&super::WorkspaceNavigationTarget>,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
@@ -79,10 +108,21 @@ pub(super) fn render_agent_panel(
         config,
         agent_scroll,
         hits,
-        |row| row.rows.len(),
+        |row| row.line_count(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
+            let related = selected
+                .is_some_and(|target| target.matches(&ClientEndpointId::Local, &row.workspace_id));
+            render_agent_row(buffer, rect, row, config, related);
+            if config.mouse_capture {
+                if let Some(status_rect) = row.recap_hit_rect(rect) {
+                    hits.agent_recap_previews.push((
+                        status_rect,
+                        ClientEndpointId::Local,
+                        row.pane_id.clone(),
+                    ));
+                }
+            }
         },
     );
 }
@@ -310,11 +350,20 @@ pub(super) fn agent_row(
         },
         state_text,
     );
+    let status_message = crate::api::schema::common::normalize_status_message_preview(
+        agent.status_message.as_deref(),
+    );
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
+        workspace_id: agent.workspace_id.clone(),
         status: agent.agent_status,
         focused: agent.focused,
         rows,
+        status_message,
+        status_text: state_text.to_string(),
+        is_omp_idle_recap: agent.agent_status == crate::api::schema::AgentStatus::Idle
+            && agent.agent.as_deref() == Some("omp")
+            && agent.status_message.is_some(),
     })
 }
 
@@ -323,22 +372,19 @@ pub(super) fn render_agent_row(
     rect: Rect,
     row: &AgentRow,
     config: &ClientShellConfig,
+    related: bool,
 ) {
     let palette = &config.palette;
-    let row_style = if row.focused {
+    let row_style = if related {
+        Style::default().bg(super::sidebar::workspace_selection_background(palette))
+    } else if row.focused {
         Style::default().bg(palette.active_row_bg)
     } else {
         Style::default()
     };
-    let name_style = if row.focused {
-        Style::default()
-            .fg(palette.text)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(palette.subtext0)
-            .add_modifier(Modifier::BOLD)
-    };
+    let name_style = Style::default()
+        .fg(palette.mauve)
+        .add_modifier(Modifier::BOLD);
     let status_style = Style::default().fg(status_color(row.status, palette));
     let secondary = Style::default().fg(palette.overlay0);
     let icon = (
@@ -353,7 +399,31 @@ pub(super) fn render_agent_row(
     } else {
         row.rows.clone()
     };
-    for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
+    if row.focused || related {
+        buffer.set_style(rect, row_style);
+    }
+    // A one-cell gutter marks the pane that currently has focus. Reserving it
+    // for every agent row keeps content from shifting when focus changes.
+    let gutter = 1.min(rect.width);
+    let content = Rect::new(
+        rect.x.saturating_add(gutter),
+        rect.y,
+        rect.width.saturating_sub(gutter),
+        rect.height,
+    );
+    if row.focused {
+        for y in rect.y..rect.bottom() {
+            put_text(
+                buffer,
+                rect.x,
+                y,
+                1,
+                "▍",
+                Style::default().fg(palette.green),
+            );
+        }
+    }
+    for (index, tokens) in rows.iter().take(content.height as usize).enumerate() {
         let indent = if index == 0 { 1 } else { 3 };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
         spans.extend(crate::ui::resolved_token_spans(
@@ -361,13 +431,26 @@ pub(super) fn render_agent_row(
             icon,
             status_style,
             name_style,
+            name_style,
             secondary,
             secondary,
             palette,
-            rect.width.saturating_sub(indent as u16) as usize,
+            content.width.saturating_sub(indent as u16) as usize,
         ));
         Paragraph::new(Line::from(spans)).style(row_style).render(
-            Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
+            Rect::new(content.x, content.y + index as u16, content.width, 1),
+            buffer,
+        );
+    }
+    if rows.len() < content.height as usize {
+        let indent = 3.min(content.width as usize);
+        let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
+        spans.push(ratatui::text::Span::styled(
+            row.status_message.as_deref().unwrap_or(&row.status_text),
+            Style::default().fg(palette.text),
+        ));
+        Paragraph::new(Line::from(spans)).style(row_style).render(
+            Rect::new(content.x, content.y + rows.len() as u16, content.width, 1),
             buffer,
         );
     }

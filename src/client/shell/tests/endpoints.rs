@@ -37,6 +37,7 @@ fn agent(
         state_labels: Vec::new(),
         tokens: Vec::new(),
         focused: true,
+        status_message: None,
     }
 }
 
@@ -71,6 +72,55 @@ fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
     remote.workspaces[0].label = "remote-workspace".into();
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     (state, endpoint_id)
+}
+
+#[test]
+fn space_rows_read_status_text_from_their_own_endpoint() {
+    let (mut state, remote) = state_with_remote();
+    for (endpoint_id, message) in [
+        (ClientEndpointId::Local, "local work"),
+        (remote.clone(), "remote work"),
+    ] {
+        let mut projection = state
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == endpoint_id)
+            .unwrap()
+            .snapshot
+            .clone()
+            .unwrap();
+        projection.agents = vec![agent("omp", AgentStatus::Working, 1)];
+        let (boot_id, revision) = (projection.boot_id.clone(), projection.revision);
+        let endpoint = state
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.endpoint_id == endpoint_id)
+            .unwrap();
+        endpoint.agent_presentation.receive_status_messages(
+            None,
+            crate::protocol::endpoint::EndpointAgentStatusMessages {
+                boot_id,
+                revision,
+                messages: [("pane_1".to_string(), message.to_string())]
+                    .into_iter()
+                    .collect(),
+            },
+        );
+        state.set_endpoint_snapshot(&endpoint_id, projection);
+    }
+
+    let frame = state.compose(100, 30).expect("multi-endpoint sidebar");
+
+    assert_eq!(state.hits.workspaces.len(), 2);
+    for hit in &state.hits.workspaces {
+        let needle = if hit.endpoint_id.is_local() {
+            "local work"
+        } else {
+            "remote work"
+        };
+        assert_eq!(hit.rect.height, 3);
+        cell_symbol_position(&frame, hit.rect, needle);
+    }
 }
 
 #[test]

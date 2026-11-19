@@ -23,6 +23,7 @@ pub(super) fn snapshot_with_completions(
 ) -> (
     protocol::ClientShellSnapshot,
     protocol::endpoint::EndpointAgentCompletions,
+    protocol::endpoint::EndpointAgentStatusMessages,
 ) {
     let snapshot = app.session_metadata_snapshot();
     let completions = protocol::endpoint::EndpointAgentCompletions {
@@ -32,6 +33,20 @@ pub(super) fn snapshot_with_completions(
             .agents
             .iter()
             .filter_map(|agent| agent.completion_seq.map(|seq| (agent.pane_id.clone(), seq)))
+            .collect(),
+    };
+    let status_messages = protocol::endpoint::EndpointAgentStatusMessages {
+        boot_id: boot_id.to_owned(),
+        revision,
+        messages: snapshot
+            .agents
+            .iter()
+            .filter_map(|agent| {
+                agent
+                    .status_message
+                    .clone()
+                    .map(|message| (agent.pane_id.clone(), message))
+            })
             .collect(),
     };
     let focused_workspace_id = location
@@ -173,6 +188,7 @@ pub(super) fn snapshot_with_completions(
                 state_labels,
                 tokens,
                 focused,
+                status_message: None,
             }
         })
         .collect();
@@ -264,7 +280,7 @@ pub(super) fn snapshot_with_completions(
         agents,
         commands: app.client_shell_command_manifest(),
     };
-    (shell, completions)
+    (shell, completions, status_messages)
 }
 
 pub(super) struct RenderedPaneSurface {
@@ -692,7 +708,8 @@ mod tests {
             .values()
             .all(|runtime| runtime.test_scroll_metrics_reads() == 1));
 
-        let (shell, completions) = snapshot_with_completions(&app, "boot", 9, None, None);
+        let (shell, completions, status_messages) =
+            snapshot_with_completions(&app, "boot", 9, None, None);
         assert_eq!(shell.panes.len(), 3);
         assert_eq!(shell.agents.len(), 2);
         assert_eq!(shell.focused_pane_id, metadata.focused_pane_id);
@@ -710,6 +727,7 @@ mod tests {
         }
         assert_eq!(completions.revision, 9);
         assert_eq!(completions.completions.len(), 2);
+        assert_eq!(status_messages.revision, 9);
         assert!(completions.completions.iter().all(|(_, seq)| *seq == 7));
         assert!(app
             .terminal_runtimes

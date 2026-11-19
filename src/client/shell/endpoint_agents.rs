@@ -48,6 +48,7 @@ pub(super) fn render_expanded(
     agent_view_label: Option<&str>,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
+    selected: Option<&super::WorkspaceNavigationTarget>,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
@@ -70,9 +71,11 @@ pub(super) fn render_expanded(
         config,
         agent_scroll,
         hits,
-        |row| row.agent.rows.len(),
+        |row| row.agent.line_count(),
         |buffer, rect, row, hits| {
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
+            let related = selected
+                .is_some_and(|target| target.matches(&row.endpoint_id, &row.agent.workspace_id));
+            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config, related);
             if row.stale {
                 buffer.set_style(
                     rect,
@@ -80,6 +83,15 @@ pub(super) fn render_expanded(
                         .fg(config.palette.overlay0)
                         .add_modifier(Modifier::DIM),
                 );
+            }
+            if config.mouse_capture {
+                if let Some(status_rect) = row.agent.recap_hit_rect(rect) {
+                    hits.agent_recap_previews.push((
+                        status_rect,
+                        row.endpoint_id.clone(),
+                        row.agent.pane_id.clone(),
+                    ));
+                }
             }
             hits.endpoint_agents
                 .push((rect, row.endpoint_id.clone(), row.agent.pane_id.clone()));
@@ -106,7 +118,7 @@ impl ClientShellState {
         };
         let heights = rows
             .iter()
-            .map(|row| row.agent.rows.len().max(1).min(u16::MAX as usize) as u16)
+            .map(|row| row.agent.line_count().max(1).min(u16::MAX as usize) as u16)
             .collect::<Vec<_>>();
         let mut gaps = vec![self.config.agents.row_gap; rows.len()];
         if let Some(last) = gaps.last_mut() {

@@ -13,6 +13,10 @@ pub(super) struct EndpointAgentPresentation {
         Option<u64>,
         crate::protocol::endpoint::EndpointAgentCompletions,
     )>,
+    pending_status_messages: Option<(
+        Option<u64>,
+        crate::protocol::endpoint::EndpointAgentStatusMessages,
+    )>,
 }
 
 impl EndpointAgentPresentation {
@@ -33,6 +37,25 @@ impl EndpointAgentPresentation {
             return;
         }
         self.pending_completions = Some((generation, completions));
+    }
+
+    pub(super) fn receive_status_messages(
+        &mut self,
+        generation: Option<u64>,
+        messages: crate::protocol::endpoint::EndpointAgentStatusMessages,
+    ) {
+        if self
+            .pending_status_messages
+            .as_ref()
+            .is_some_and(|(current_generation, current)| {
+                *current_generation == generation
+                    && current.boot_id == messages.boot_id
+                    && current.revision >= messages.revision
+            })
+        {
+            return;
+        }
+        self.pending_status_messages = Some((generation, messages));
     }
 
     #[cfg(test)]
@@ -77,7 +100,21 @@ impl EndpointAgentPresentation {
                     && projection.revision == snapshot.revision
             })
             .map(|(_, projection)| projection.completions);
+        let status_messages = self
+            .pending_status_messages
+            .take()
+            .filter(|(received_generation, projection)| {
+                *received_generation == generation
+                    && projection.boot_id == snapshot.boot_id
+                    && projection.revision == snapshot.revision
+            })
+            .map(|(_, projection)| projection.messages);
         for agent in &mut snapshot.agents {
+            agent.status_message = status_messages.as_ref().and_then(|messages| {
+                crate::api::schema::common::normalize_status_message(
+                    messages.get(&agent.pane_id).map(String::as_str),
+                )
+            });
             match agent.agent_status {
                 AgentStatus::Working => {
                     self.working.insert(agent.pane_id.clone());
@@ -223,6 +260,7 @@ mod tests {
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: true,
+            status_message: None,
         }
     }
 
@@ -303,6 +341,95 @@ mod tests {
                 .into_iter()
                 .collect(),
         }
+    }
+
+    fn status_messages(
+        boot: &str,
+        revision: u64,
+        message: Option<&str>,
+    ) -> crate::protocol::endpoint::EndpointAgentStatusMessages {
+        crate::protocol::endpoint::EndpointAgentStatusMessages {
+            boot_id: boot.into(),
+            revision,
+            messages: message
+                .map(|message| ("agent-pane".into(), message.into()))
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn status_message_projection_applies_to_the_matching_snapshot() {
+        let mut presentation = EndpointAgentPresentation::default();
+        let mut baseline = snapshot(AgentStatus::Working, 0, 1);
+        presentation.project_snapshot(&mut baseline);
+
+        presentation.receive_status_messages(
+            None,
+            status_messages("endpoint-boot", 2, Some("Run the test suite")),
+        );
+        let mut next = snapshot(AgentStatus::Working, 1, 2);
+        presentation.project_snapshot(&mut next);
+
+        assert_eq!(
+            next.agents[0].status_message.as_deref(),
+            Some("Run the test suite")
+        );
+    }
+
+    #[test]
+    fn stale_status_message_projection_is_ignored() {
+        for (boot, revision) in [("other-boot", 2), ("endpoint-boot", 1)] {
+            let mut presentation = EndpointAgentPresentation::default();
+            let mut baseline = snapshot(AgentStatus::Working, 0, 1);
+            presentation.project_snapshot(&mut baseline);
+            presentation
+                .receive_status_messages(None, status_messages(boot, revision, Some("stale")));
+            let mut next = snapshot(AgentStatus::Working, 1, 2);
+            presentation.project_snapshot(&mut next);
+
+            assert!(next.agents[0].status_message.is_none(), "{boot} {revision}");
+        }
+
+        let mut presentation = EndpointAgentPresentation::default();
+        let mut baseline = snapshot(AgentStatus::Working, 0, 1);
+        presentation.project_snapshot_for_generation(&mut baseline, Some(1));
+        presentation
+            .receive_status_messages(Some(2), status_messages("endpoint-boot", 2, Some("stale")));
+        let mut next = snapshot(AgentStatus::Working, 1, 2);
+        presentation.project_snapshot_for_generation(&mut next, Some(1));
+
+        assert!(next.agents[0].status_message.is_none());
+    }
+
+    #[test]
+    fn status_messages_stay_out_of_the_snapshot_codec() {
+        let mut snapshot = snapshot(AgentStatus::Working, 1, 2);
+        snapshot.agents[0].status_message = Some("Run the test suite".into());
+
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+
+        assert!(!encoded.contains("status_message"), "{encoded}");
+    }
+
+    #[test]
+    fn status_message_projection_without_a_pane_entry_clears_the_line() {
+        let mut presentation = EndpointAgentPresentation::default();
+        let mut baseline = snapshot(AgentStatus::Working, 0, 1);
+        presentation.project_snapshot(&mut baseline);
+        presentation.receive_status_messages(
+            None,
+            status_messages("endpoint-boot", 2, Some("Run the test suite")),
+        );
+        let mut with_message = snapshot(AgentStatus::Working, 1, 2);
+        presentation.project_snapshot(&mut with_message);
+        assert!(with_message.agents[0].status_message.is_some());
+
+        presentation.receive_status_messages(None, status_messages("endpoint-boot", 3, None));
+        let mut cleared = snapshot(AgentStatus::Working, 2, 3);
+        presentation.project_snapshot(&mut cleared);
+
+        assert!(cleared.agents[0].status_message.is_none());
     }
 
     #[test]

@@ -478,6 +478,31 @@ mod tests {
         app
     }
 
+    #[test]
+    fn agent_info_exposes_a_single_line_hook_status_message() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+        assert!(terminal
+            .set_hook_authority(
+                "prime-agent".into(),
+                "prime-agent".into(),
+                AgentState::Working,
+                Some("Run tests\n  again\tnow".into()),
+                Some(1),
+            )
+            .is_some());
+
+        let agent = app.collect_agent_infos().pop().unwrap();
+
+        assert_eq!(agent.status_message.as_deref(), Some("Run tests again now"));
+        assert_eq!(agent.agent_status, AgentStatus::Working);
+    }
+
     fn start_deferred_agent_prompt(
         app: &mut App,
         id: &str,

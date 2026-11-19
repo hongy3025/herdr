@@ -2,11 +2,14 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=omp
-// HERDR_INTEGRATION_VERSION=10
+// HERDR_INTEGRATION_VERSION=12
 // @ts-nocheck
 
 import net from "node:net";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { Database } from "bun:sqlite";
 
 const HERDR_ENV = process.env.HERDR_ENV;
 const socketPath = process.env.HERDR_SOCKET_PATH;
@@ -78,6 +81,7 @@ type QueuedState = {
 
 const idleDebounceMs = parseDurationEnv("HERDR_OMP_IDLE_DEBOUNCE_MS", 250);
 const retryGraceMs = parseDurationEnv("HERDR_OMP_RETRY_GRACE_MS", 2500);
+const recapPollMs = Math.max(10, parseDurationEnv("HERDR_OMP_RECAP_POLL_MS", 2000));
 const retryableErrorPattern =
   /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
 let reportSeq = Date.now() * 1000;
@@ -242,6 +246,83 @@ function askBlockedMessage(args: any): string {
   return "waiting for user input";
 }
 
+// Matches OMP's own working-row intent normalization, so the reported text and
+// the pane's working row describe the same action.
+function workingIntent(intent: unknown): string | undefined {
+  if (typeof intent !== "string") {
+    return undefined;
+  }
+  return (
+    intent
+      .trim()
+      .replace(/\s*\.+$/, "")
+      .trim() || undefined
+  );
+}
+
+const COMPLETION_MESSAGE_LIMIT = 8_192;
+
+// Assistant text only: thinking, tool calls, and tool results never become the
+// sidebar recap.
+function completionRecap(messages: unknown[]): string | undefined {
+  const assistant = lastAssistantMessage(messages);
+  const content = Array.isArray(assistant?.content) ? assistant.content : [];
+  const text = content
+    .filter((block: any) => block?.type === "text" && typeof block.text === "string")
+    .map((block: any) => block.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) {
+    return undefined;
+  }
+  let end = 0;
+  let previewEnd = 0;
+  let characterCount = 0;
+  for (const character of text) {
+    if (characterCount === COMPLETION_MESSAGE_LIMIT) {
+      return `${text.slice(0, previewEnd)}…`;
+    }
+    end += character.length;
+    characterCount += 1;
+    if (characterCount < COMPLETION_MESSAGE_LIMIT) {
+      previewEnd = end;
+    }
+  }
+  return text;
+}
+
+// OMP journals idle recaps separately from the conversation, after agent_end.
+// Its extension API does not currently emit an event for them.
+function latestIdleRecap(sessionId: string): { id: number; recap: string } | undefined | null {
+  const profile = process.env.OMP_PROFILE || process.env.PI_PROFILE;
+  const root = path.join(os.homedir(), process.env.PI_CONFIG_DIR || ".omp");
+  const profileRoot = profile && profile !== "default" ? path.join(root, "profiles", profile) : root;
+  const defaultAgentDir = path.join(profileRoot, "agent");
+  const configuredDir = process.env.PI_CODING_AGENT_DIR;
+  let dataDir = configuredDir || defaultAgentDir;
+  if (
+    (process.platform === "linux" || process.platform === "darwin") &&
+    (!configuredDir || path.resolve(configuredDir) === path.resolve(defaultAgentDir)) &&
+    process.env.XDG_DATA_HOME
+  ) {
+    const xdgRoot = path.join(process.env.XDG_DATA_HOME, "omp");
+    const xdgProfile = profile && profile !== "default" ? path.join(xdgRoot, "profiles", profile) : xdgRoot;
+    if (fs.existsSync(xdgProfile)) dataDir = xdgProfile;
+  }
+  let db: Database | undefined;
+  try {
+    db = new Database(path.join(dataDir, "history.db"), { readonly: true, create: false });
+    return db.query(
+      "SELECT id, recap FROM session_recaps WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+    ).get(sessionId) as { id: number; recap: string } | undefined;
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
 export default function (pi) {
   if (!enabled()) {
     return;
@@ -255,8 +336,11 @@ export default function (pi) {
   let blockedMessage: string | undefined;
   let lastState: AgentState | undefined;
   let lastMessage: string | undefined;
+  let workingMessage: string | undefined;
+  let completionMessage: string | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let recapTimer: ReturnType<typeof setInterval> | undefined;
   let rootSession = false;
 
   function clearTimer(timer: ReturnType<typeof setTimeout> | undefined) {
@@ -270,6 +354,32 @@ export default function (pi) {
     clearTimer(retryTimer);
     idleTimer = undefined;
     retryTimer = undefined;
+  }
+
+  function stopRecapPolling() {
+    if (recapTimer) clearInterval(recapTimer);
+    recapTimer = undefined;
+  }
+
+  function watchIdleRecap() {
+    stopRecapPolling();
+    const sessionId = currentAgentSessionId;
+    if (!sessionId) return;
+    const baseline = latestIdleRecap(sessionId);
+    // Never mistake an older recap for this turn if the database cannot be read.
+    if (baseline === null) return;
+    const lastId = baseline?.id ?? 0;
+    recapTimer = setInterval(() => {
+      if (agentActive || currentAgentSessionId !== sessionId) return;
+      const entry = latestIdleRecap(sessionId);
+      if (!entry || entry.id <= lastId || typeof entry.recap !== "string") return;
+      const message = completionRecap([{ role: "assistant", content: [{ type: "text", text: entry.recap }] }]);
+      if (!message) return;
+      completionMessage = message;
+      publishState();
+      stopRecapPolling();
+    }, recapPollMs);
+    recapTimer.unref?.();
   }
 
   function clearFailureState() {
@@ -286,9 +396,9 @@ export default function (pi) {
       return { state: "blocked" as const, message: failureMessage };
     }
     if (agentActive || retryHoldActive) {
-      return { state: "working" as const, message: undefined };
+      return { state: "working" as const, message: workingMessage };
     }
-    return { state: "idle" as const, message: undefined };
+    return { state: "idle" as const, message: completionMessage };
   }
 
   function publishState(force = false) {
@@ -339,10 +449,13 @@ export default function (pi) {
 
   function resetSessionState() {
     clearPendingTimers();
+    stopRecapPolling();
     clearFailureState();
     agentActive = false;
     blockedCount = 0;
     blockedMessage = undefined;
+    workingMessage = undefined;
+    completionMessage = undefined;
   }
 
   function activateBlocked(message: string | undefined) {
@@ -394,10 +507,13 @@ export default function (pi) {
       return;
     }
     updateSessionRef(ctx);
+    stopRecapPolling();
     void reportSession();
     clearPendingTimers();
     clearFailureState();
     agentActive = true;
+    workingMessage = "Working…";
+    completionMessage = undefined;
     publishState();
   });
 
@@ -418,6 +534,15 @@ export default function (pi) {
 
   pi.on("tool_execution_start", (event, ctx) => {
     if (event?.toolName !== "ask") {
+      if (!rootSession) {
+        return;
+      }
+      const intent = workingIntent(event?.intent);
+      if (intent === undefined || intent === workingMessage) {
+        return;
+      }
+      workingMessage = intent;
+      publishState();
       return;
     }
     if (!rootSession && !activateRootSession(ctx)) {
@@ -453,6 +578,7 @@ export default function (pi) {
     }
 
     agentActive = false;
+    completionMessage = completionRecap(Array.isArray(event?.messages) ? event.messages : []);
 
     const retryableMessage = retryableErrorMessage(event);
     if (retryableMessage) {
@@ -461,11 +587,13 @@ export default function (pi) {
     }
 
     scheduleIdle();
+    watchIdleRecap();
   });
 
   pi.on("session_shutdown", () => {
     if (rootSession) {
       clearPendingTimers();
+      stopRecapPolling();
     }
   });
 }

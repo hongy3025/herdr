@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { rm } from "node:fs/promises";
+import { Database } from "bun:sqlite";
+import { mkdtemp, rm } from "node:fs/promises";
 import net, { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,8 @@ const originalCreateConnection = net.createConnection;
 const originalEnvironment = {
   HERDR_ENV: process.env.HERDR_ENV,
   HERDR_OMP_IDLE_DEBOUNCE_MS: process.env.HERDR_OMP_IDLE_DEBOUNCE_MS,
+  HERDR_OMP_RECAP_POLL_MS: process.env.HERDR_OMP_RECAP_POLL_MS,
+  PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
   HERDR_PANE_ID: process.env.HERDR_PANE_ID,
   HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
   OMPCODE: process.env.OMPCODE,
@@ -592,6 +595,186 @@ test("Oh My Pi keeps working when a turn ends with a scheduled continuation", as
   expect(requestStates(requests)).toEqual(["idle", "working", "idle"]);
 });
 
+test("Oh My Pi reports working intents and a completion preview", async () => {
+  const requests = await startRecordingServer("omp-status-message");
+  process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
+  const { handlers, pi } = createExtensionHarness();
+
+  const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+  install(pi);
+
+  let idle = true;
+  const context = {
+    hasUI: true,
+    isIdle: () => idle,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestMessages(requests).length === 1);
+
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  await waitFor(() => requestMessages(requests).length === 2);
+  expect(requestMessages(requests)[1]).toBe("Working…");
+
+  handlers.get("tool_execution_start")?.({ toolName: "bash", intent: "Run the test suite" }, context);
+  await waitFor(() => requestMessages(requests).length === 3);
+  expect(requestMessages(requests)[2]).toBe("Run the test suite");
+
+  idle = true;
+  handlers.get("agent_end")?.(
+    {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "fix the bug" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "internal reasoning" },
+            { type: "text", text: "Fixed the parser\nand added a regression test." },
+          ],
+        },
+        { role: "toolResult", content: [{ type: "text", text: "tool output" }] },
+      ],
+    },
+    context,
+  );
+  await waitFor(() => requestMessages(requests).length === 4);
+  expect(requestMessages(requests)[3]).toBe(
+    "Fixed the parser and added a regression test.",
+  );
+
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  await waitFor(() => requestMessages(requests).length === 5);
+  expect(requestMessages(requests)[4]).toBe("Working…");
+});
+
+test("Oh My Pi replaces the assistant reply with the later idle recap", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "herdr-omp-recap-"));
+  const db = new Database(join(directory, "history.db"));
+  db.run("PRAGMA journal_mode=WAL");
+  db.run("CREATE TABLE session_recaps (id INTEGER PRIMARY KEY, session_id TEXT, recap TEXT)");
+  db.run("INSERT INTO session_recaps VALUES (1, 'session-a', 'old recap')");
+  try {
+    const requests = await startRecordingServer("omp-idle-recap");
+    process.env.PI_CODING_AGENT_DIR = directory;
+    process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
+    process.env.HERDR_OMP_RECAP_POLL_MS = "10";
+    const { handlers, pi } = createExtensionHarness();
+    const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+    install(pi);
+    const context = {
+      hasUI: true,
+      isIdle: () => true,
+      sessionManager: { getSessionFile: () => undefined, getSessionId: () => "session-a" },
+    };
+    handlers.get("session_start")?.({}, context);
+    await waitFor(() => requestMessages(requests).length === 1);
+    handlers.get("agent_start")?.({}, context);
+    await waitFor(() => requestMessages(requests).length === 2);
+    handlers.get("agent_end")?.({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "你好！" }] }],
+    }, context);
+    await waitFor(() => requestMessages(requests).length === 3);
+    expect(requestMessages(requests)[2]).toBe("你好！");
+    db.run("INSERT INTO session_recaps VALUES (2, 'other-session', 'wrong recap')");
+    db.run("INSERT INTO session_recaps VALUES (3, 'session-a', '你目前只打了招呼')");
+    await waitFor(() => requestMessages(requests).length === 4);
+    expect(requestMessages(requests)[3]).toBe("你目前只打了招呼");
+    handlers.get("session_shutdown")?.({}, context);
+  } finally {
+    db.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Oh My Pi reports the full completion recap as idle status text", async () => {
+  const requests = await startRecordingServer("omp-full-status-message");
+  process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
+  const { handlers, pi } = createExtensionHarness();
+
+  const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+  install(pi);
+
+  let idle = true;
+  const context = {
+    hasUI: true,
+    isIdle: () => idle,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestMessages(requests).length === 1);
+
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  await waitFor(() => requestMessages(requests).length === 2);
+
+  idle = true;
+  const recap = "word ".repeat(200).trim();
+  handlers.get("agent_end")?.(
+    {
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: recap }],
+        },
+      ],
+    },
+    context,
+  );
+  await waitFor(() => requestMessages(requests).length === 3);
+
+  expect(requestMessages(requests)[2]).toBe(recap);
+});
+
+test("Oh My Pi bounds completion status text at 8192 characters", async () => {
+  const requests = await startRecordingServer("omp-status-message-limit");
+  process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
+  const { handlers, pi } = createExtensionHarness();
+
+  const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+  install(pi);
+
+  let idle = true;
+  const context = {
+    hasUI: true,
+    isIdle: () => idle,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestMessages(requests).length === 1);
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  await waitFor(() => requestMessages(requests).length === 2);
+
+  idle = true;
+  handlers.get("agent_end")?.(
+    {
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "a".repeat(9_000) }],
+        },
+      ],
+    },
+    context,
+  );
+  await waitFor(() => requestMessages(requests).length === 3);
+
+  const message = requestMessages(requests)[2];
+  expect(message).toBe(`${"a".repeat(8_191)}…`);
+  expect([...message].length).toBe(8_192);
+});
+
 test("Pi retries working state after an unanswered socket attempt", async () => {
   const { attemptedRequests, deliveredRequests, connectionCount } =
     await startDroppedFirstResponseServer("pi-retry");
@@ -677,6 +860,12 @@ function requestSessionPath(request: unknown): unknown {
     return undefined;
   }
   return request.params.agent_session_path;
+}
+
+function requestMessages(requests: unknown[]): unknown[] {
+  return requests
+    .filter((request) => isRecord(request) && request.method === "pane.report_agent")
+    .map((request) => (isRecord(request) && isRecord(request.params) ? request.params.message : undefined));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -952,6 +952,7 @@ fn sidebar_scrollbars_use_proportional_shared_geometry_and_drag() {
             state_labels: Vec::new(),
             tokens: Vec::new(),
             focused: false,
+            status_message: None,
         });
     }
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -976,7 +977,7 @@ fn sidebar_scrollbars_use_proportional_shared_geometry_and_drag() {
         };
         assert!(track.width > 0);
         let thumb = crate::ui::scrollbar_thumb(metrics, track).expect("scrollbar thumb");
-        assert!(thumb.len > 1);
+        assert!(thumb.len > 0 && thumb.len <= track.height);
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: track.x,

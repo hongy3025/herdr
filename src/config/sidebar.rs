@@ -461,16 +461,26 @@ pub struct SpacesSidebarConfig {
     #[serde(deserialize_with = "deserialize_sidebar_rows")]
     pub rows: SpaceSidebarRows,
     pub row_gap: u16,
+    /// Show one status dot per pane across all workspace tabs. Default: true.
+    pub pane_strip: bool,
+    /// Show the winning agent and status text as a third Space row. Default: true.
+    pub status_text: bool,
 }
 
 impl Default for SpacesSidebarConfig {
     fn default() -> Self {
         Self {
             rows: vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
-                vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
+                vec![
+                    SpaceSidebarToken::StateIcon,
+                    SpaceSidebarToken::Workspace,
+                    SpaceSidebarToken::GitStatus,
+                ],
+                vec![SpaceSidebarToken::Branch],
             ],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
+            pane_strip: true,
+            status_text: true,
         }
     }
 }
@@ -506,11 +516,34 @@ mod tests {
         assert_eq!(
             config.spaces.rows,
             vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
-                vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
+                vec![
+                    SpaceSidebarToken::StateIcon,
+                    SpaceSidebarToken::Workspace,
+                    SpaceSidebarToken::GitStatus,
+                ],
+                vec![SpaceSidebarToken::Branch],
             ]
         );
         assert_eq!(config.spaces.row_gap, 0);
+    }
+
+    #[test]
+    fn space_agent_flags_default_on_and_parse_independently() {
+        let defaults = SpacesSidebarConfig::default();
+        assert!(defaults.pane_strip);
+        assert!(defaults.status_text);
+
+        let disabled: SpacesSidebarConfig =
+            toml::from_str("pane_strip = false\n").expect("pane strip override");
+        assert!(!disabled.pane_strip);
+        assert!(disabled.status_text);
+        assert_eq!(disabled.rows, defaults.rows);
+
+        let round_trip = toml::to_string(&disabled).expect("serialize spaces sidebar config");
+        assert_eq!(
+            toml::from_str::<SpacesSidebarConfig>(&round_trip).expect("deserialize"),
+            disabled
+        );
     }
 
     #[test]

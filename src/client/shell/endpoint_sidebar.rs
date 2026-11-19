@@ -292,6 +292,17 @@ pub(super) fn render_expanded(
             );
         }
     }
+    let summaries = state
+        .endpoints
+        .iter()
+        .map(|endpoint| {
+            endpoint
+                .snapshot
+                .as_deref()
+                .map(super::workspace_summary::workspace_summaries)
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -306,6 +317,7 @@ pub(super) fn render_expanded(
         .map(|row| match row {
             Row::Endpoint(_) => 1,
             Row::Workspace { endpoint, entry } => {
+                let endpoint_summaries = &summaries[*endpoint];
                 let endpoint = &state.endpoints[*endpoint];
                 let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
                     .unwrap_or(&empty_collapsed_groups);
@@ -314,21 +326,21 @@ pub(super) fn render_expanded(
                     .as_deref()
                     .and_then(|snapshot| {
                         let workspace = snapshot.workspaces.get(entry.index)?;
-                        Some(
-                            super::sidebar::workspace_rows(
+                        let rows = super::sidebar::workspace_rows(
+                            workspace,
+                            super::sidebar::displayed_workspace_status(
+                                snapshot,
                                 workspace,
-                                super::sidebar::displayed_workspace_status(
-                                    snapshot,
-                                    workspace,
-                                    collapsed_groups,
-                                ),
-                                entry.indented,
-                                &config.spaces,
-                            )
-                            .len()
-                            .max(1)
-                            .min(u16::MAX as usize) as u16,
-                        )
+                                collapsed_groups,
+                            ),
+                            entry.indented,
+                            &config.spaces,
+                        );
+                        Some(super::sidebar::space_row_height(
+                            &rows,
+                            endpoint_summaries.get(&workspace.workspace_id),
+                            &config.spaces,
+                        ))
                     })
                     .unwrap_or(1)
             }
@@ -433,6 +445,7 @@ pub(super) fn render_expanded(
                     .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
             }
             Row::Workspace { endpoint, entry } => {
+                let endpoint_summaries = &summaries[*endpoint];
                 let endpoint = &state.endpoints[*endpoint];
                 let Some(snapshot) = endpoint.snapshot.as_deref() else {
                     continue;
@@ -453,7 +466,14 @@ pub(super) fn render_expanded(
                     entry.indented,
                     &config.spaces,
                 );
-                let height = (tokens.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+                let tab_count = snapshot
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.workspace_id == workspace.workspace_id)
+                    .count();
+                let summary = endpoint_summaries.get(&workspace.workspace_id);
+                let height = super::sidebar::space_row_height(&tokens, summary, &config.spaces)
+                    .min(body.height);
                 if y.saturating_add(height) > body.bottom() {
                     break;
                 }
@@ -468,19 +488,43 @@ pub(super) fn render_expanded(
                 let selected = state.selected_workspace_id.is_some_and(|target| {
                     target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
                 });
+                let mut widgets = super::sidebar::SpaceRowWidgets::default();
                 super::sidebar::render_workspace_rows(
                     buffer,
                     nested,
-                    status,
-                    config.status_indicators,
-                    entry,
-                    tokens,
-                    endpoint_active && workspace.focused,
-                    selected,
-                    state.selected_workspace_id.is_some(),
-                    false,
-                    palette,
+                    super::sidebar::SpaceRowRender {
+                        status,
+                        indicators: config.status_indicators,
+                        entry,
+                        rows: tokens,
+                        focused: endpoint_active && workspace.focused,
+                        selected,
+                        navigating: state.selected_workspace_id.is_some(),
+                        dragged: false,
+                        palette,
+                        spaces: &config.spaces,
+                        workspace_id: &workspace.workspace_id,
+                        tab_count,
+                        summary,
+                    },
+                    &mut widgets,
                 );
+                if config.mouse_capture {
+                    for (rect, pane_id) in widgets.pane_dots {
+                        hits.workspace_pane_dots.push((
+                            rect,
+                            endpoint.endpoint_id.clone(),
+                            pane_id,
+                        ));
+                    }
+                    if let Some((rect, workspace_id)) = widgets.tab_badge {
+                        hits.workspace_tab_badges.push((
+                            rect,
+                            endpoint.endpoint_id.clone(),
+                            workspace_id,
+                        ));
+                    }
+                }
                 if endpoint.status != ClientEndpointStatus::Online {
                     buffer.set_style(
                         rect,
@@ -559,6 +603,7 @@ pub(super) fn render_expanded(
         active_snapshot.and_then(|snapshot| snapshot.agent_view_label.as_deref()),
         state.endpoints,
         state.active_endpoint_id,
+        state.selected_workspace_id,
         config,
         state.agent_scroll,
         hits,

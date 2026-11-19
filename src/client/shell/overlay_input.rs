@@ -70,6 +70,77 @@ impl ClientShellState {
         self.chrome_drag = None;
     }
 
+    pub(super) fn open_agent_recap(&mut self, endpoint_id: &ClientEndpointId, pane_id: &str) {
+        let text = self
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.snapshot.as_deref())
+            .and_then(|snapshot| {
+                snapshot.agents.iter().find(|agent| {
+                    agent.pane_id == pane_id
+                        && agent.agent_status == crate::api::schema::AgentStatus::Idle
+                        && agent.agent.as_deref() == Some("omp")
+                })
+            })
+            .and_then(|agent| {
+                crate::api::schema::common::normalize_status_message(
+                    agent.status_message.as_deref(),
+                )
+            });
+        let Some(text) = text else {
+            return;
+        };
+        self.overlay = Some(ClientShellOverlay::AgentRecap(ClientAgentRecapOverlay {
+            text,
+            scroll: 0,
+        }));
+        self.chrome_drag = None;
+    }
+
+    pub(super) fn scroll_agent_recap(&mut self, delta: isize) {
+        let max_scroll = self.current_agent_recap_max_scroll();
+        if let Some(ClientShellOverlay::AgentRecap(recap)) = self.overlay.as_mut() {
+            recap.scroll = if delta.is_negative() {
+                recap.scroll.saturating_sub(delta.unsigned_abs())
+            } else {
+                recap.scroll.saturating_add(delta as usize)
+            }
+            .min(max_scroll);
+        }
+    }
+
+    fn current_agent_recap_max_scroll(&self) -> usize {
+        let Some(ClientShellOverlay::AgentRecap(recap)) = self.overlay.as_ref() else {
+            return self.hits.agent_recap_max_scroll;
+        };
+        let Some((cols, rows)) = self.last_composed_size else {
+            return self.hits.agent_recap_max_scroll;
+        };
+        let screen = Rect::new(0, 0, cols, rows);
+        let Some(outer) = crate::ui::centered_popup_rect(
+            screen,
+            AGENT_RECAP_MODAL_SIZE.0,
+            AGENT_RECAP_MODAL_SIZE.1,
+        ) else {
+            return 0;
+        };
+        let inner = Rect::new(
+            outer.x.saturating_add(1),
+            outer.y.saturating_add(1),
+            outer.width.saturating_sub(2),
+            outer.height.saturating_sub(2),
+        );
+        if inner.height < 8 || inner.width < 20 {
+            return 0;
+        }
+        let body = crate::ui::modal_stack_areas(inner, 2, 1, 0, 1).content;
+        ratatui::widgets::Paragraph::new(recap.text.as_str())
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .line_count(body.width.max(1))
+            .saturating_sub(body.height.max(1) as usize)
+    }
+
     pub(super) fn dismiss_release_notes(&mut self, outcome: &mut ClientShellInput) {
         let notes = match self.overlay.take() {
             Some(ClientShellOverlay::ReleaseNotes(notes)) => notes,
@@ -567,6 +638,46 @@ impl ClientShellState {
                     let max_scroll = self.current_release_notes_max_scroll();
                     if let Some(ClientShellOverlay::ReleaseNotes(notes)) = self.overlay.as_mut() {
                         notes.scroll = u16::try_from(max_scroll).unwrap_or(u16::MAX);
+                    }
+                    outcome.repaint = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        if matches!(self.overlay, Some(ClientShellOverlay::AgentRecap(_))) {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    self.overlay = None;
+                    outcome.repaint = true;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.scroll_agent_recap(-1);
+                    outcome.repaint = true;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.scroll_agent_recap(1);
+                    outcome.repaint = true;
+                }
+                KeyCode::PageUp => {
+                    self.scroll_agent_recap(-8);
+                    outcome.repaint = true;
+                }
+                KeyCode::PageDown => {
+                    self.scroll_agent_recap(8);
+                    outcome.repaint = true;
+                }
+                KeyCode::Home => {
+                    if let Some(ClientShellOverlay::AgentRecap(recap)) = self.overlay.as_mut() {
+                        recap.scroll = 0;
+                    }
+                    outcome.repaint = true;
+                }
+                KeyCode::End => {
+                    let max_scroll = self.current_agent_recap_max_scroll();
+                    if let Some(ClientShellOverlay::AgentRecap(recap)) = self.overlay.as_mut() {
+                        recap.scroll = max_scroll;
                     }
                     outcome.repaint = true;
                 }

@@ -10,6 +10,7 @@ pub(crate) enum EndpointControlMessage {
     HealthPong,
     AgentViewProjection(DecodedAgentViewProjection),
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
+    AgentStatusMessages(crate::protocol::endpoint::EndpointAgentStatusMessages),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
     Ignored,
 }
@@ -24,6 +25,11 @@ pub(crate) fn decode_endpoint_control(
     if kind == crate::protocol::endpoint::AGENT_COMPLETIONS_KIND {
         return Ok(serde_json::from_str(data)
             .map(EndpointControlMessage::AgentCompletions)
+            .unwrap_or(EndpointControlMessage::Ignored));
+    }
+    if kind == crate::protocol::endpoint::AGENT_STATUS_MESSAGES_KIND {
+        return Ok(serde_json::from_str(data)
+            .map(EndpointControlMessage::AgentStatusMessages)
             .unwrap_or(EndpointControlMessage::Ignored));
     }
     if kind == crate::protocol::endpoint::AGENT_VIEW_PROJECTION_KIND {
@@ -99,6 +105,30 @@ mod tests {
             decode_endpoint_control(&kind, &data).unwrap()
         else {
             panic!("expected completion projection");
+        };
+        assert_eq!(decoded, projection);
+        assert!(matches!(
+            decode_endpoint_control(&kind, "invalid").unwrap(),
+            EndpointControlMessage::Ignored
+        ));
+    }
+
+    #[test]
+    fn status_message_optional_control_round_trips_without_changing_snapshot_codec() {
+        let projection = crate::protocol::endpoint::EndpointAgentStatusMessages {
+            boot_id: "boot".into(),
+            revision: 3,
+            messages: [("pane".into(), "Run tests".into())].into_iter().collect(),
+        };
+        let crate::protocol::ServerMessage::EndpointControl { kind, data } =
+            crate::protocol::endpoint::agent_status_messages_message(&projection).unwrap()
+        else {
+            panic!("expected optional control");
+        };
+        let EndpointControlMessage::AgentStatusMessages(decoded) =
+            decode_endpoint_control(&kind, &data).unwrap()
+        else {
+            panic!("expected status message projection");
         };
         assert_eq!(decoded, projection);
         assert!(matches!(

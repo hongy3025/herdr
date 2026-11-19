@@ -31,12 +31,23 @@ pub const AGENT_VIEW_PROJECTION_CAPABILITY: &str = "agent_view_projection";
 pub const AGENT_VIEW_PROJECTION_KIND: &str = "endpoint.agent-view.v1";
 pub const AGENT_COMPLETIONS_CAPABILITY: &str = "agent_completions";
 pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
+pub const AGENT_STATUS_MESSAGES_CAPABILITY: &str = "agent_status_messages";
+pub const AGENT_STATUS_MESSAGES_KIND: &str = "endpoint.agent-status-messages.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointAgentCompletions {
     pub boot_id: String,
     pub revision: u64,
     pub completions: std::collections::BTreeMap<String, u64>,
+}
+
+/// Optional companion to a V1 snapshot carrying one-line agent status text for
+/// panes that reported a message. The snapshot codec stays frozen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointAgentStatusMessages {
+    pub boot_id: String,
+    pub revision: u64,
+    pub messages: std::collections::BTreeMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -122,6 +133,15 @@ pub fn agent_completions_message(
     })
 }
 
+pub fn agent_status_messages_message(
+    projection: &EndpointAgentStatusMessages,
+) -> serde_json::Result<ServerMessage> {
+    Ok(ServerMessage::EndpointControl {
+        kind: AGENT_STATUS_MESSAGES_KIND.into(),
+        data: serde_json::to_string(projection)?,
+    })
+}
+
 pub fn agent_view_projection_message(
     boot_id: &str,
     revision: u64,
@@ -174,6 +194,7 @@ impl EndpointServerWelcome {
                 HEALTH_CHECK_CAPABILITY.into(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
+                AGENT_STATUS_MESSAGES_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -385,6 +406,7 @@ mod tests {
                 HEALTH_CHECK_CAPABILITY.to_string(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
+                AGENT_STATUS_MESSAGES_CAPABILITY.to_string(),
             ]
         );
     }

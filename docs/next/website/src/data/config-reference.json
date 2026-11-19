@@ -1079,6 +1079,12 @@
           "description": "Complete Agent-row overrides keyed by strict canonical agent id. Agents without an override use ui.sidebar.agents.rows."
         },
         {
+          "key": "ui.sidebar.spaces.pane_strip",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show one status dot per pane of the workspace's active tab in the Spaces sidebar. Hidden when the active tab has a single pane."
+        },
+        {
           "key": "ui.sidebar.spaces.row_gap",
           "type": "integer",
           "default": "0",
@@ -1089,6 +1095,12 @@
           "type": "list of token rows",
           "default": "[[\"state_icon\", \"workspace\"], [\"branch\", \"git_status\"]]",
           "description": "Expanded Space sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon and git_status accept fixed styles only. At most 16 rows and 16 tokens per row."
+        },
+        {
+          "key": "ui.sidebar.spaces.status_text",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show the winning agent's one-line status text under each Space row. Only blocked, done, and working agents produce a line."
         },
         {
           "key": "ui.accent",

@@ -32,10 +32,16 @@ fn client_shell_projection(
     };
     let completions: protocol::endpoint::EndpointAgentCompletions =
         serde_json::from_str(&read_control(protocol::endpoint::AGENT_COMPLETIONS_KIND)).unwrap();
+    let status_messages: protocol::endpoint::EndpointAgentStatusMessages = serde_json::from_str(
+        &read_control(protocol::endpoint::AGENT_STATUS_MESSAGES_KIND),
+    )
+    .unwrap();
     let snapshot: Box<protocol::ClientShellSnapshot> =
         serde_json::from_str(&read_control(protocol::endpoint::ENDPOINT_SNAPSHOT_KIND)).unwrap();
     assert_eq!(completions.boot_id, snapshot.boot_id);
     assert_eq!(completions.revision, snapshot.revision);
+    assert_eq!(status_messages.boot_id, snapshot.boot_id);
+    assert_eq!(status_messages.revision, snapshot.revision);
     (snapshot, completions)
 }
 

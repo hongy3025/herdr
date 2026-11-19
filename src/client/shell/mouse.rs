@@ -5,6 +5,37 @@ const SELECTION_AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::
 const SELECTION_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
 impl ClientShellState {
+    fn next_workspace_tab(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        workspace_id: &str,
+    ) -> Option<String> {
+        let snapshot = self
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.snapshot.as_deref())
+            .or_else(|| {
+                endpoint_id
+                    .is_local()
+                    .then_some(self.snapshot.as_deref())
+                    .flatten()
+            })?;
+        let active_tab = snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == workspace_id)?
+            .active_tab_id
+            .as_str();
+        let tabs = snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tab.workspace_id == workspace_id)
+            .collect::<Vec<_>>();
+        let current = tabs.iter().position(|tab| tab.tab_id == active_tab)?;
+        let next = (current + 1) % tabs.len().max(1);
+        tabs.get(next).map(|tab| tab.tab_id.clone())
+    }
     fn set_sidebar_width_from_column(&mut self, column: u16, outcome: &mut ClientShellInput) {
         let (min, max) = crate::config::validated_sidebar_bounds(
             self.config.sidebar_min_width,
@@ -825,6 +856,27 @@ impl ClientShellState {
                 }
                 MouseEventKind::ScrollDown => {
                     self.scroll_release_notes(3);
+                    outcome.repaint = true;
+                }
+                _ => {}
+            }
+            return;
+        }
+        if matches!(self.overlay, Some(ClientShellOverlay::AgentRecap(_))) {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left)
+                    if super::contains(self.hits.overlay_primary, point) =>
+                {
+                    self.overlay = None;
+                    self.chrome_drag = None;
+                    outcome.repaint = true;
+                }
+                MouseEventKind::ScrollUp => {
+                    self.scroll_agent_recap(-3);
+                    outcome.repaint = true;
+                }
+                MouseEventKind::ScrollDown => {
+                    self.scroll_agent_recap(3);
                     outcome.repaint = true;
                 }
                 _ => {}
@@ -2098,6 +2150,56 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                     return;
                 }
+                if self.config.mouse_capture {
+                    let recap = self
+                        .hits
+                        .agent_recap_previews
+                        .iter()
+                        .find(|(rect, _, _)| super::contains(*rect, point))
+                        .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()));
+                    if let Some((endpoint_id, pane_id)) = recap {
+                        self.open_agent_recap(&endpoint_id, &pane_id);
+                        if self.overlay.is_some() {
+                            outcome.repaint = true;
+                            return;
+                        }
+                    }
+                }
+                if self.config.mouse_capture {
+                    let dot = self
+                        .hits
+                        .workspace_pane_dots
+                        .iter()
+                        .find(|(rect, _, _)| super::contains(*rect, point))
+                        .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()));
+                    if let Some((endpoint_id, pane_id)) = dot {
+                        self.focus_or_activate(
+                            endpoint_id,
+                            ClientEndpointFocusTarget::Pane(pane_id),
+                            outcome,
+                        );
+                        return;
+                    }
+                    let badge = self
+                        .hits
+                        .workspace_tab_badges
+                        .iter()
+                        .find(|(rect, _, _)| super::contains(*rect, point))
+                        .map(|(_, endpoint_id, workspace_id)| {
+                            (endpoint_id.clone(), workspace_id.clone())
+                        });
+                    if let Some((endpoint_id, workspace_id)) = badge {
+                        if let Some(next_tab) = self.next_workspace_tab(&endpoint_id, &workspace_id)
+                        {
+                            self.focus_or_activate(
+                                endpoint_id,
+                                ClientEndpointFocusTarget::Tab(next_tab),
+                                outcome,
+                            );
+                        }
+                        return;
+                    }
+                }
                 let workspace_press = self
                     .hits
                     .workspaces
@@ -2151,6 +2253,8 @@ impl ClientShellState {
                     .find(|(rect, _)| super::contains(*rect, point))
                     .map(|(_, pane_id)| pane_id.clone());
                 if let Some(pane_id) = agent_pane_id {
+                    let active_endpoint_id = self.active_endpoint_id.clone();
+                    self.link_agent_workspace(&active_endpoint_id, &pane_id, outcome);
                     self.push_endpoint_method(
                         crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
                             pane_id,

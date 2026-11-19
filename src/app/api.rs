@@ -723,6 +723,7 @@ impl App {
 
         if previous_agent_status != agent_status
             || update.previous_presentation != update.presentation
+            || update.status_message_changed
         {
             let presentation = update.presentation.clone();
             self.emit_event(crate::api::schema::EventEnvelope {
@@ -735,6 +736,7 @@ impl App {
                     title: presentation.title,
                     display_agent: presentation.display_agent,
                     state_labels: presentation.state_labels,
+                    status_message: update.status_message.clone(),
                 },
             });
         }
@@ -1486,6 +1488,59 @@ mod tests {
         )
         .await
         .expect("matching agent detection runtime should be reset");
+    }
+
+    #[test]
+    fn message_only_hook_updates_emit_agent_status_events() {
+        let hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            hub.clone(),
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("status-message")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Codex), AgentState::Working);
+        let report = |message: &str, seq: u64| AppEvent::HookStateReported {
+            pane_id,
+            source: "prime-agent".into(),
+            agent_label: "prime-agent".into(),
+            state: AgentState::Working,
+            message: Some(message.to_string()),
+            seq: Some(seq),
+            session_ref: None,
+        };
+
+        app.handle_internal_event(report("Working…", 1));
+        app.handle_internal_event(report("Run the test suite", 2));
+
+        let reported: Vec<_> = hub
+            .events_after(0)
+            .into_iter()
+            .filter_map(|(_, envelope)| match envelope.data {
+                crate::api::schema::EventData::PaneAgentStatusChanged {
+                    status_message, ..
+                } => Some(status_message),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            reported.contains(&Some("Run the test suite".to_string())),
+            "{reported:?}"
+        );
     }
 
     #[test]

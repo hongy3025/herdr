@@ -46,6 +46,17 @@ impl ClientShellState {
                     && pending.target.endpoint_id == self.active_endpoint_id
                     && self.navigation_target_valid(&pending.target)
             });
+        if self
+            .linked_workspace
+            .as_ref()
+            .is_some_and(|target| !self.navigation_target_valid(target))
+        {
+            self.linked_workspace = None;
+        }
+        let linked_workspace_highlight = self
+            .linked_workspace
+            .as_ref()
+            .filter(|target| self.navigation_target_valid(target));
         // A resize invalidates pane geometry, not the healthy Local workspace chrome.
         let local_snapshot = self.snapshot.as_deref().filter(|_| {
             self.endpoints.len() == 1
@@ -73,7 +84,8 @@ impl ClientShellState {
                 .navigate_workspace_id
                 .as_ref()
                 .filter(|_| valid_navigation_target)
-                .or_else(|| pending_workspace_highlight.map(|pending| &pending.target)),
+                .or_else(|| pending_workspace_highlight.map(|pending| &pending.target))
+                .or(linked_workspace_highlight),
             reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
@@ -170,6 +182,17 @@ impl ClientShellState {
                     && pending.target.endpoint_id == self.active_endpoint_id
                     && self.navigation_target_valid(&pending.target)
             });
+        if self
+            .linked_workspace
+            .as_ref()
+            .is_some_and(|target| !self.navigation_target_valid(target))
+        {
+            self.linked_workspace = None;
+        }
+        let linked_workspace_highlight = self
+            .linked_workspace
+            .as_ref()
+            .filter(|target| self.navigation_target_valid(target));
         if self.snapshot.is_none() || self.pane_surface.is_none() {
             return Some(self.compose_unavailable(cols, rows).into());
         }
@@ -229,7 +252,8 @@ impl ClientShellState {
                     .navigate_workspace_id
                     .as_ref()
                     .filter(|_| valid_navigation_target)
-                    .or_else(|| pending_workspace_highlight.map(|pending| &pending.target)),
+                    .or_else(|| pending_workspace_highlight.map(|pending| &pending.target))
+                    .or(linked_workspace_highlight),
                 reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
@@ -697,6 +721,7 @@ impl ClientShellState {
                 self.hits.release_notes_scrollbar = rendered.release_notes_scrollbar;
                 self.hits.release_notes_scroll_metrics = rendered.release_notes_scroll_metrics;
                 self.hits.release_notes_max_scroll = rendered.release_notes_max_scroll;
+                self.hits.agent_recap_max_scroll = rendered.agent_recap_max_scroll;
                 rendered.cursor
             };
             frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
@@ -713,6 +738,9 @@ impl ClientShellState {
             notes.scroll = notes
                 .scroll
                 .min(u16::try_from(self.hits.release_notes_max_scroll).unwrap_or(u16::MAX));
+        }
+        if let Some(ClientShellOverlay::AgentRecap(recap)) = self.overlay.as_mut() {
+            recap.scroll = recap.scroll.min(self.hits.agent_recap_max_scroll);
         }
         if self.endpoint_status(&self.active_endpoint_id) != Some(ClientEndpointStatus::Online) {
             frame.cursor = None;

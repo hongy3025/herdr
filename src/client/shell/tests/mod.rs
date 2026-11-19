@@ -192,6 +192,7 @@ fn pane_scroll_result(
             display_agent: None,
             agent_status: crate::api::schema::AgentStatus::Unknown,
             state_labels: HashMap::new(),
+            status_message: None,
             tokens: HashMap::new(),
             agent_session: None,
             scroll: Some(crate::api::schema::PaneScrollInfo {
