@@ -82,6 +82,15 @@ class PackageDistTests(unittest.TestCase):
             self.assertEqual(len(linux_entry["sha256"]), 64)
             self.assertEqual(len(windows_entry["sha256"]), 64)
 
+    def test_identity_scan_stops_at_adjacent_text(self) -> None:
+        with_suffix = MARKER + b"trailing-literal"
+        self.linux.write_bytes(fake_linux(marker=with_suffix))
+        self.windows.write_bytes(fake_windows(marker=with_suffix))
+        output = self.package()
+        with zipfile.ZipFile(output) as archive:
+            manifest = json.loads(archive.read(DIST_MANIFEST_ENTRY))
+        self.assertEqual(manifest["build_identity"], MARKER.decode())
+
     def test_output_is_deterministic(self) -> None:
         first = self.package(self.root / "first.zip").read_bytes()
         second = self.package(self.root / "second.zip").read_bytes()

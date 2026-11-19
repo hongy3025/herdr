@@ -66,25 +66,28 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-_IDENTITY_BYTES = frozenset(
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.:_-"
+# Fully parse the marker instead of scanning a character class: the binary may
+# place another string immediately after it, and the hex commit is the only
+# fixed-width segment that can stop the match.
+_IDENTITY_RE = re.compile(
+    rb"herdr-dist-identity:2:"
+    rb"([0-9A-Za-z._+\-]+):"   # version
+    rb"(\d+):"                  # protocol
+    rb"([0-9A-Za-z._+\-]+):"   # channel
+    rb"([0-9A-Za-z._+\-]*):"   # build id ("-" when absent)
+    rb"([0-9a-f\-]+)"          # commit ("-" when absent)
 )
 
 
 def find_build_identity(data: bytes, source: Path) -> str:
-    prefix = IDENTITY_MARKER_PREFIX.encode()
-    start = data.find(prefix)
-    if start < 0:
+    match = _IDENTITY_RE.search(data)
+    if match is None:
         raise PackageError(
             f"{source} was not built with {IDENTITY_MARKER_PREFIX}; "
             "pass a payload produced by the build you are packaging"
         )
-    end = start
-    while end < len(data) and data[end] in _IDENTITY_BYTES:
-        end += 1
-    identity = data[start:end].decode("ascii")
-    parts = identity.split(":")
-    if len(parts) != 7 or parts[0] != "herdr-dist-identity" or parts[1] != "2":
+    identity = match.group(0).decode("ascii")
+    if len(identity.split(":")) != 7:
         raise PackageError(f"{source} carries a malformed build identity: {identity}")
     return identity
 
