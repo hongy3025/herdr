@@ -2,6 +2,14 @@
 
 pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Compiled-in identity read by the `herdr-dist.zip` packager.
+///
+/// `concat!` only accepts literals, so the protocol number is duplicated here;
+/// `dist_identity_marker_tracks_version_and_protocol` keeps it in sync with
+/// `PROTOCOL_VERSION`.
+pub const DIST_IDENTITY_MARKER: &str =
+    concat!("herdr-dist-identity:1:", env!("CARGO_PKG_VERSION"), ":22");
+
 pub fn channel() -> &'static str {
     non_empty(option_env!("HERDR_BUILD_CHANNEL")).unwrap_or("stable")
 }
@@ -40,5 +48,15 @@ mod tests {
     #[test]
     fn stable_version_defaults_to_cargo_version() {
         assert!(!super::version().is_empty());
+    }
+
+    #[test]
+    fn dist_identity_marker_tracks_version_and_protocol() {
+        let expected = format!(
+            "herdr-dist-identity:1:{}:{}",
+            env!("CARGO_PKG_VERSION"),
+            crate::protocol::PROTOCOL_VERSION
+        );
+        assert_eq!(super::DIST_IDENTITY_MARKER, expected);
     }
 }
