@@ -83,6 +83,7 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
         &remote_ssh,
         &prepared_remote.remote_herdr,
         prepared_remote.stop_after_install_approved,
+        false,
         remote.live_handoff,
         require_surface_interest,
     )?;
@@ -214,6 +215,7 @@ impl SavedSshSetup {
     pub(crate) fn prepare(
         mut self,
         session_name: &str,
+        force_install: bool,
     ) -> io::Result<Option<crate::client::endpoint::SshMachineMetadata>> {
         crate::session::validate_name(session_name)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -223,12 +225,19 @@ impl SavedSshSetup {
             remote_herdr,
             candidates,
         } = self;
-        let prepared =
-            prepare_discovered_remote_herdr(&ssh, remote_herdr, &candidates, false, true)?;
+        let prepared = prepare_discovered_remote_herdr(
+            &ssh,
+            remote_herdr,
+            &candidates,
+            false,
+            true,
+            force_install,
+        )?;
         ensure_remote_server_ready(
             &ssh,
             &prepared.remote_herdr,
             prepared.stop_after_install_approved,
+            force_install,
             false,
             true,
         )?;
@@ -1497,6 +1506,7 @@ pub(super) fn prepare_remote_herdr(
         &candidates,
         live_handoff_enabled,
         require_surface_interest,
+        false,
     )
 }
 
@@ -1506,7 +1516,15 @@ fn prepare_discovered_remote_herdr(
     candidates: &[RemoteHerdr],
     live_handoff_enabled: bool,
     require_surface_interest: bool,
+    force_install: bool,
 ) -> io::Result<PreparedRemoteHerdr> {
+    let override_binary = remote_binary_override_path()?;
+    let dist_description = dist_install_description(&remote_herdr.platform)?;
+    require_custom_source_for_force(
+        force_install,
+        override_binary.is_some(),
+        dist_description.is_some(),
+    )?;
     if remote_herdr.platform.is_windows() {
         return prepare_windows_remote_herdr(
             ssh,
@@ -1514,12 +1532,13 @@ fn prepare_discovered_remote_herdr(
             candidates,
             live_handoff_enabled,
             require_surface_interest,
+            force_install,
+            override_binary,
+            dist_description,
         );
     }
-    let override_binary = remote_binary_override_path()?;
-    let dist_description = dist_install_description(&remote_herdr.platform)?;
 
-    if override_binary.is_none() {
+    if override_binary.is_none() && !force_install {
         for candidate in candidates {
             if remote_binary_supports_endpoint_requirement(ssh, candidate, require_surface_interest)
                 .unwrap_or(false)
@@ -1553,6 +1572,7 @@ fn prepare_discovered_remote_herdr(
             status_probe_herdr,
             live_handoff_enabled,
             require_surface_interest,
+            force_install,
         )?;
     }
     if !stop_after_install_approved {
@@ -1613,11 +1633,12 @@ fn prepare_windows_remote_herdr(
     candidates: &[RemoteHerdr],
     live_handoff_enabled: bool,
     require_surface_interest: bool,
+    force_install: bool,
+    override_package: Option<PathBuf>,
+    dist_description: Option<String>,
 ) -> io::Result<PreparedRemoteHerdr> {
-    let override_package = remote_binary_override_path()?;
     let custom_package = override_package.is_some();
-    let dist_description = dist_install_description(&remote_herdr.platform)?;
-    if !custom_package {
+    if !custom_package && !force_install {
         for candidate in candidates {
             if remote_binary_supports_endpoint_requirement(
                 ssh,
@@ -1638,6 +1659,7 @@ fn prepare_windows_remote_herdr(
             candidate,
             live_handoff_enabled,
             require_surface_interest,
+            force_install,
         )?
     } else {
         false
@@ -2096,6 +2118,23 @@ fn remote_binary_override_path() -> io::Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
+fn require_custom_source_for_force(
+    force_install: bool,
+    has_override: bool,
+    has_dist_archive: bool,
+) -> io::Result<()> {
+    if !force_install || has_override || has_dist_archive {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "machine add --force needs a custom install source: set {REMOTE_BINARY_ENV_VAR} or place herdr-dist.zip next to herdr or in {}",
+            crate::config::config_dir().display()
+        ),
+    ))
+}
+
 fn install_source_description(
     platform: &RemotePlatform,
     override_binary: Option<&Path>,
@@ -2265,6 +2304,7 @@ fn ensure_remote_server_ready(
     ssh: &RemoteSsh,
     remote_herdr: &RemoteHerdr,
     stop_after_install_approved: bool,
+    force_restart: bool,
     live_handoff_enabled: bool,
     require_surface_interest: bool,
 ) -> io::Result<()> {
@@ -2281,13 +2321,28 @@ fn ensure_remote_server_ready(
         return Ok(());
     };
 
-    let Some(reason) = remote_server_restart_reason(
+    let reason = remote_server_restart_reason(
         endpoint_protocol_generation,
         detached_server_daemon,
         require_surface_interest,
         surface_interest,
         health_check,
-    ) else {
+    );
+    let Some(reason) = reason else {
+        if !force_restart {
+            return Ok(());
+        }
+        if stop_after_install_approved {
+            stop_remote_server(ssh, remote_herdr)?;
+            return Ok(());
+        }
+        if confirm_remote_server_stop(
+            &ssh.destination(),
+            version.as_deref(),
+            RemoteServerRestartReason::ForcedInstall,
+        )? {
+            stop_remote_server(ssh, remote_herdr)?;
+        }
         return Ok(());
     };
 
@@ -2317,6 +2372,7 @@ fn confirm_remote_install_with_running_server(
     remote_herdr: &RemoteHerdr,
     live_handoff_enabled: bool,
     require_surface_interest: bool,
+    force_restart: bool,
 ) -> io::Result<bool> {
     let target = ssh.destination();
     let status = match remote_server_status(ssh, remote_herdr, require_surface_interest) {
@@ -2365,6 +2421,7 @@ fn confirm_remote_install_with_running_server(
         live_handoff_enabled,
         require_surface_interest,
     );
+    let plan = forced_install_running_server_plan(plan, force_restart);
 
     if plan == RemoteInstallRunningServerPlan::KeepRunning {
         if io::stdin().is_terminal() {
@@ -2602,6 +2659,7 @@ fn confirm_remote_server_stop(
         RemoteServerRestartReason::EndpointProtocol
             | RemoteServerRestartReason::SurfaceInterest
             | RemoteServerRestartReason::HealthCheck
+            | RemoteServerRestartReason::ForcedInstall
     );
     if !io::stdin().is_terminal() {
         if required_upgrade {
@@ -2640,6 +2698,11 @@ fn confirm_remote_server_stop(
         RemoteServerRestartReason::DaemonDetach => {
             eprintln!(
                 "the remote server was started by a herdr build that may not survive SSH connection loss. restart it so network drops disconnect only this client."
+            );
+        }
+        RemoteServerRestartReason::ForcedInstall => {
+            eprintln!(
+                "the remote server must restart to run the newly installed herdr binary."
             );
         }
     }
@@ -6283,6 +6346,39 @@ function Get-Process {
     #[test]
     fn windows_install_source_falls_back_to_published_release() {
         assert!(windows_install_source_from(None, None).is_none());
+    }
+
+    #[test]
+    fn forced_install_turns_keep_running_into_stop_required() {
+        let plan = super::forced_install_running_server_plan(
+            RemoteInstallRunningServerPlan::KeepRunning,
+            true,
+        );
+        assert_eq!(
+            plan,
+            RemoteInstallRunningServerPlan::StopRequired(RemoteServerRestartReason::ForcedInstall)
+        );
+        assert_eq!(
+            super::forced_install_running_server_plan(
+                RemoteInstallRunningServerPlan::KeepRunning,
+                false
+            ),
+            RemoteInstallRunningServerPlan::KeepRunning
+        );
+    }
+
+    #[test]
+    fn force_requires_a_custom_install_source() {
+        let err = require_custom_source_for_force(true, false, false)
+            .expect_err("force without a custom source must fail");
+        let message = err.to_string();
+        assert!(message.contains("--force"), "{message}");
+        assert!(message.contains("herdr-dist.zip"), "{message}");
+        assert!(message.contains("HERDR_REMOTE_BINARY"), "{message}");
+
+        require_custom_source_for_force(false, false, false).expect("force not requested");
+        require_custom_source_for_force(true, true, false).expect("override source");
+        require_custom_source_for_force(true, false, true).expect("dist source");
     }
 
     #[test]

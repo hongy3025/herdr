@@ -11,7 +11,7 @@ const HELP: &str = "Usage:
   herdr machine list [--json]
   herdr machine status [<label-or-id>] [--json]
   herdr machine reconnect <label-or-id>
-  herdr machine add <ssh-target> [--label <label>] [--remote-session <name>]
+  herdr machine add <ssh-target> [--label <label>] [--remote-session <name>] [--force]
   herdr machine rename <profile-id> --label <label>
   herdr machine remove <profile-id>
   herdr machine enable <profile-id>
@@ -19,6 +19,7 @@ const HELP: &str = "Usage:
 
 Add prepares the remote Herdr installation and starts its server before saving.
 Missing or incompatible installations require approval in an interactive terminal.
+--force reinstalls from herdr-dist.zip or HERDR_REMOTE_BINARY and restarts the remote server.
 Changes apply automatically to open local Herdr clients.
 Removing or disabling a machine leaves its remote sessions running.
 Saved machines contain only a label, SSH target, explicit Herdr session, and enabled state.
@@ -212,6 +213,7 @@ struct AddArgs {
     target: String,
     label: Option<String>,
     session: Option<String>,
+    force: bool,
 }
 
 fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
@@ -219,9 +221,18 @@ fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
     let mut target = None;
     let mut label = None;
     let mut session = None;
+    let mut force = false;
     let mut index = 0;
     while index < args.len() {
         let (name, value) = match args[index].as_str() {
+            "--force" => {
+                if force {
+                    return Err("--force can only be specified once".into());
+                }
+                force = true;
+                index += 1;
+                continue;
+            }
             "--label" | "--remote-session" => {
                 let Some(value) = args.get(index + 1) else {
                     return Err(format!("missing value for {}", args[index]));
@@ -251,13 +262,14 @@ fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
         }
     }
     let target = target.ok_or_else(|| {
-        "usage: herdr machine add <ssh-target> [--label <label>] [--remote-session <name>]"
+        "usage: herdr machine add <ssh-target> [--label <label>] [--remote-session <name>] [--force]"
             .to_owned()
     })?;
     Ok(AddArgs {
         target,
         label,
         session,
+        force,
     })
 }
 
@@ -301,6 +313,7 @@ fn add(args: &[String]) -> std::io::Result<i32> {
         target,
         label,
         session,
+        force,
     } = match parse_add_args(args) {
         Ok(args) => args,
         Err(error) => {
@@ -348,7 +361,7 @@ fn add(args: &[String]) -> std::io::Result<i32> {
     let metadata = match setup
         .map(Ok)
         .unwrap_or_else(|| crate::remote::SavedSshSetup::connect(&target))
-        .and_then(|setup| setup.prepare(&session))
+        .and_then(|setup| setup.prepare(&session, force))
     {
         Ok(metadata) => metadata,
         Err(error) => {
@@ -614,10 +627,39 @@ mod tests {
                     target: "workstation.coder".into(),
                     label: Some("coder".into()),
                     session: session.map(str::to_owned),
+                    force: false,
                 },
                 "{args:?}"
             );
         }
+    }
+
+    #[test]
+    fn add_parser_accepts_force_in_any_position() {
+        for args in [
+            vec!["--force", "workstation.coder"],
+            vec!["workstation.coder", "--force"],
+            vec!["--label", "coder", "workstation.coder", "--force"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(parse_add_args(&args).unwrap().force, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn add_parser_rejects_duplicate_force() {
+        let args = ["workstation.coder", "--force", "--force"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let error = parse_add_args(&args).unwrap_err();
+        assert!(error.contains("--force can only be specified once"), "{error}");
+    }
+
+    #[test]
+    fn help_documents_force() {
+        assert!(HELP.contains("--force"));
+        assert!(HELP.contains("herdr-dist.zip"));
     }
 
     #[test]
