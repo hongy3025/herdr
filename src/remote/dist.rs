@@ -181,16 +181,17 @@ impl DistArchive {
 
         crate::checksum::verify_sha256(&path, &sha256)?;
 
-        if format == DistFormat::Exe
-            && !file_contains(&path, crate::build_info::DIST_IDENTITY_MARKER.as_bytes())?
-        {
+        let identity = crate::build_info::DIST_IDENTITY_MARKER.as_bytes();
+        let carries_identity = match format {
+            DistFormat::Exe => file_contains(&path, identity)?,
+            DistFormat::Zip => package_contains_identity(&path)?,
+        };
+        if !carries_identity {
             return Err(invalid_data(format!(
-                "{DIST_ARCHIVE_FILE} payload {payload} does not carry build identity {}; package the {asset_key} binary produced by this build",
+                "{DIST_ARCHIVE_FILE} payload {payload} does not carry build identity {}; package the {asset_key} payload produced by this build",
                 crate::build_info::DIST_IDENTITY_MARKER
             )));
         }
-        // A nested Windows package is validated by the packager, which reads
-        // herdr.exe out of the inner zip and checks the same identity.
 
         #[cfg(unix)]
         if format == DistFormat::Exe {
@@ -287,14 +288,37 @@ fn entry_too_large(size: u64) -> io::Error {
 }
 
 fn file_contains(path: &Path, needle: &[u8]) -> io::Result<bool> {
+    reader_contains(&mut File::open(path)?, needle)
+}
+
+fn package_contains_identity(path: &Path) -> io::Result<bool> {
+    let file = File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|err| {
+        invalid_data(format!(
+            "{} is not a readable Windows package: {err}",
+            path.display()
+        ))
+    })?;
+    let mut executable = archive.by_name("herdr.exe").map_err(|_| {
+        invalid_data(format!(
+            "{} is missing herdr.exe; remote installs need the complete package",
+            path.display()
+        ))
+    })?;
+    reader_contains(
+        &mut executable,
+        crate::build_info::DIST_IDENTITY_MARKER.as_bytes(),
+    )
+}
+
+fn reader_contains(reader: &mut impl Read, needle: &[u8]) -> io::Result<bool> {
     if needle.is_empty() {
         return Ok(true);
     }
-    let mut file = File::open(path)?;
     let mut buffer = vec![0u8; 64 * 1024];
     let mut window = Vec::new();
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             return Ok(false);
         }
@@ -381,6 +405,22 @@ mod tests {
         payload
     }
 
+    fn windows_package(with_identity: bool) -> Vec<u8> {
+        let mut executable = b"MZ".to_vec();
+        if with_identity {
+            executable.extend_from_slice(crate::build_info::DIST_IDENTITY_MARKER.as_bytes());
+        }
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .start_file("herdr.exe", zip::write::SimpleFileOptions::default())
+            .expect("windows executable");
+        writer.write_all(&executable).expect("write executable");
+        writer
+            .finish()
+            .expect("finish windows package")
+            .into_inner()
+    }
+
     fn valid_manifest(version: &str, protocol: u32) -> serde_json::Value {
         json!({
             "schema_version": 1,
@@ -397,7 +437,7 @@ mod tests {
                 },
                 "windows-x86_64": {
                     "path": "herdr-windows-x86_64.zip",
-                    "sha256": sha_hex(b"windows"),
+                    "sha256": sha_hex(&windows_package(true)),
                     "format": "zip",
                 },
             },
@@ -443,7 +483,7 @@ mod tests {
             ),
             &[
                 ("herdr-linux-x86_64", linux_payload().as_slice()),
-                ("herdr-windows-x86_64.zip", b"windows"),
+                ("herdr-windows-x86_64.zip", windows_package(true).as_slice()),
             ],
         );
 
@@ -757,7 +797,7 @@ mod tests {
                 &crate::build_info::version(),
                 crate::protocol::PROTOCOL_VERSION,
             ),
-            &[("herdr-windows-x86_64.zip", b"windows")],
+            &[("herdr-windows-x86_64.zip", windows_package(true).as_slice())],
         );
         let dir = temp_dir("extract-windows-out");
 
@@ -769,7 +809,35 @@ mod tests {
             install.path.file_name().and_then(|name| name.to_str()),
             Some("herdr-windows-x86_64.zip")
         );
-        assert_eq!(fs::read(&install.path).expect("read payload"), b"windows");
+        assert_eq!(
+            fs::read(&install.path).expect("read payload"),
+            windows_package(true)
+        );
+    }
+
+    #[test]
+    fn rejects_windows_package_from_another_build() {
+        let mut manifest = valid_manifest(
+            &crate::build_info::version(),
+            crate::protocol::PROTOCOL_VERSION,
+        );
+        manifest["entries"]["windows-x86_64"]["sha256"] = json!(sha_hex(&windows_package(false)));
+        let archive = archive_with(
+            "extract-windows-other-build",
+            manifest,
+            &[(
+                "herdr-windows-x86_64.zip",
+                windows_package(false).as_slice(),
+            )],
+        );
+
+        let err = archive
+            .extract_entry(
+                "windows-x86_64",
+                temp_dir("extract-windows-other-build-out"),
+            )
+            .expect_err("windows package from another build must fail");
+        assert!(err.to_string().contains("build identity"), "{err}");
     }
 
     #[cfg(unix)]

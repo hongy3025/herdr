@@ -20,8 +20,9 @@ fn main() {
 }
 
 /// Build identity embedded in the binary and scanned by the `herdr-dist.zip`
-/// packager. Every build of the same source with the same channel, build id,
-/// and commit produces the same value; a different build does not.
+/// packager. Builds that share version, channel, build id, and commit (or the
+/// same git HEAD when no commit is supplied) agree; differing values reject
+/// each other at packaging and install time.
 fn dist_identity_marker() -> String {
     let version = env::var("CARGO_PKG_VERSION").expect("cargo sets CARGO_PKG_VERSION");
     let channel = segment(env::var("HERDR_BUILD_CHANNEL").ok(), "stable");

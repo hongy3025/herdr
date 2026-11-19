@@ -3,8 +3,8 @@
 pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Compiled-in identity read by the `herdr-dist.zip` packager.
-// Written by `build.rs`; `remote::dist` compares it with archives and scans
-// payloads for it, so the bytes stay in the binary.
+// `build.rs` generates it; `remote::dist` formats it into archive errors and
+// scans payloads for it, so the bytes stay in the binary.
 include!(concat!(env!("OUT_DIR"), "/dist_identity.rs"));
 
 pub fn channel() -> &'static str {
