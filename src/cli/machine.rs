@@ -653,7 +653,10 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         let error = parse_add_args(&args).unwrap_err();
-        assert!(error.contains("--force can only be specified once"), "{error}");
+        assert!(
+            error.contains("--force can only be specified once"),
+            "{error}"
+        );
     }
 
     #[test]

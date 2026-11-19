@@ -69,7 +69,9 @@ pub(super) fn forced_install_running_server_plan(
     force_restart: bool,
 ) -> RemoteInstallRunningServerPlan {
     if force_restart && plan == RemoteInstallRunningServerPlan::KeepRunning {
-        return RemoteInstallRunningServerPlan::StopRequired(RemoteServerRestartReason::ForcedInstall);
+        return RemoteInstallRunningServerPlan::StopRequired(
+            RemoteServerRestartReason::ForcedInstall,
+        );
     }
     plan
 }
