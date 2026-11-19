@@ -1679,8 +1679,7 @@ fn prepare_windows_remote_herdr(
         )?;
     }
     // Windows needs the complete package, including its app-local ConPTY runtime.
-    let (source, used_dist) =
-        windows_install_source(override_package, &remote_herdr.platform)?;
+    let (source, used_dist) = windows_install_source(override_package, &remote_herdr.platform)?;
     let custom_identity = custom_package || used_dist;
     let install_result = (|| {
         let sha256 = crate::checksum::file_sha256(&source.path)?;
@@ -2704,9 +2703,7 @@ fn confirm_remote_server_stop(
             );
         }
         RemoteServerRestartReason::ForcedInstall => {
-            eprintln!(
-                "the remote server must restart to run the newly installed herdr binary."
-            );
+            eprintln!("the remote server must restart to run the newly installed herdr binary.");
         }
     }
 
@@ -6301,11 +6298,13 @@ function Get-Process {
             arch: "x86_64",
         };
 
-        ensure_dist_format(&platform, crate::remote::dist::DistFormat::Exe)
-            .expect("exe payload");
+        ensure_dist_format(&platform, crate::remote::dist::DistFormat::Exe).expect("exe payload");
         let err = ensure_dist_format(&platform, crate::remote::dist::DistFormat::Zip)
             .expect_err("zip payload must not install onto linux");
-        assert!(err.to_string().contains("herdr-windows-x86_64.zip"), "{err}");
+        assert!(
+            err.to_string().contains("herdr-windows-x86_64.zip"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -6342,7 +6341,10 @@ function Get-Process {
         let (source, used_dist) =
             windows_install_source_from(None, Some(dist)).expect("dist selection");
         assert_eq!(source.path, PathBuf::from("/tmp/herdr-windows-x86_64.zip"));
-        assert_eq!(source.temporary_dir.as_deref(), Some(Path::new("/tmp/dist")));
+        assert_eq!(
+            source.temporary_dir.as_deref(),
+            Some(Path::new("/tmp/dist"))
+        );
         assert!(used_dist);
     }
 
