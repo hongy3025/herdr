@@ -18,9 +18,12 @@ import sys
 import zipfile
 from pathlib import Path
 
-from scripts.changelog import read_protocol_version
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if __package__ in (None, ""):
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.changelog import read_protocol_version  # noqa: E402
+
 CARGO_TOML = PROJECT_ROOT / "Cargo.toml"
 
 DIST_MANIFEST_ENTRY = "herdr-dist.json"
