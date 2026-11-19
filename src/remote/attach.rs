@@ -1654,16 +1654,15 @@ fn prepare_windows_remote_herdr(
         )?;
     }
     // Windows needs the complete package, including its app-local ConPTY runtime.
-    let source = match override_package {
-        Some(path) => InstallSource::persistent(path),
-        None => download_release_asset(&remote_herdr.platform)?,
-    };
+    let (source, used_dist) =
+        windows_install_source(override_package, &remote_herdr.platform)?;
+    let custom_identity = custom_package || used_dist;
     let install_result = (|| {
         let sha256 = crate::checksum::file_sha256(&source.path)?;
         ssh.install_windows_herdr(
             &remote_herdr,
             &source.path,
-            &windows_package_identity(custom_package, &sha256),
+            &windows_package_identity(custom_identity, &sha256),
             &sha256,
         )
     })();
@@ -2208,6 +2207,27 @@ fn windows_package_identity(custom: bool, sha256: &str) -> String {
     } else {
         current_version()
     }
+}
+
+fn windows_install_source(
+    override_package: Option<PathBuf>,
+    platform: &RemotePlatform,
+) -> io::Result<(InstallSource, bool)> {
+    let dist = dist_install_source(platform)?;
+    match windows_install_source_from(override_package, dist) {
+        Some(selection) => Ok(selection),
+        None => Ok((download_release_asset(platform)?, false)),
+    }
+}
+
+fn windows_install_source_from(
+    override_package: Option<PathBuf>,
+    dist: Option<InstallSource>,
+) -> Option<(InstallSource, bool)> {
+    if let Some(path) = override_package {
+        return Some((InstallSource::persistent(path), false));
+    }
+    dist.map(|source| (source, true))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6220,6 +6240,49 @@ function Get-Process {
         let err = ensure_dist_format(&platform, crate::remote::dist::DistFormat::Zip)
             .expect_err("zip payload must not install onto linux");
         assert!(err.to_string().contains("herdr-windows-x86_64.zip"), "{err}");
+    }
+
+    #[test]
+    fn windows_package_identity_marks_custom_packages() {
+        assert_eq!(
+            windows_package_identity(true, "abc"),
+            format!("{}-custom.abc", current_version())
+        );
+        assert_eq!(windows_package_identity(false, "abc"), current_version());
+    }
+
+    #[test]
+    fn windows_install_source_prefers_override_package() {
+        let dist = InstallSource::temporary(
+            PathBuf::from("/tmp/herdr-windows-x86_64.zip"),
+            PathBuf::from("/tmp/dist"),
+        );
+
+        let (source, used_dist) =
+            windows_install_source_from(Some(PathBuf::from("/tmp/custom.zip")), Some(dist))
+                .expect("override selection");
+        assert_eq!(source.path, PathBuf::from("/tmp/custom.zip"));
+        assert!(source.temporary_dir.is_none());
+        assert!(!used_dist);
+    }
+
+    #[test]
+    fn windows_install_source_uses_dist_package() {
+        let dist = InstallSource::temporary(
+            PathBuf::from("/tmp/herdr-windows-x86_64.zip"),
+            PathBuf::from("/tmp/dist"),
+        );
+
+        let (source, used_dist) =
+            windows_install_source_from(None, Some(dist)).expect("dist selection");
+        assert_eq!(source.path, PathBuf::from("/tmp/herdr-windows-x86_64.zip"));
+        assert_eq!(source.temporary_dir.as_deref(), Some(Path::new("/tmp/dist")));
+        assert!(used_dist);
+    }
+
+    #[test]
+    fn windows_install_source_falls_back_to_published_release() {
+        assert!(windows_install_source_from(None, None).is_none());
     }
 
     #[test]
