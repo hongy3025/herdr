@@ -2806,7 +2806,7 @@ fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
     Ok(asset)
 }
 
-fn private_download_dir(asset_key: &str) -> io::Result<PathBuf> {
+pub(super) fn private_download_dir(asset_key: &str) -> io::Result<PathBuf> {
     let base = crate::platform::remote_private_temp_base();
     fs::create_dir_all(&base)?;
     for attempt in 0..100 {

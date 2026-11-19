@@ -7,9 +7,9 @@
 
 use std::{
     collections::BTreeMap,
-    fs::File,
+    fs::{self, File},
     io::{self, Read},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use serde::Deserialize;
@@ -20,6 +20,7 @@ pub(super) const DIST_ENV_VAR: &str = "HERDR_DIST_ARCHIVE";
 
 const DIST_SCHEMA_VERSION: u32 = 1;
 const DIST_MANIFEST_MAX_BYTES: u64 = 64 * 1024;
+const MAX_DIST_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -47,6 +48,13 @@ struct DistManifest {
 pub(super) struct DistArchive {
     path: PathBuf,
     manifest: DistManifest,
+}
+
+#[derive(Debug)]
+pub(super) struct DistInstall {
+    pub(super) path: PathBuf,
+    pub(super) temporary_dir: PathBuf,
+    pub(super) format: DistFormat,
 }
 
 impl DistArchive {
@@ -103,6 +111,67 @@ impl DistArchive {
             "{DIST_ARCHIVE_FILE} has no entry for {asset_key} (available: {available}); build that platform or remove the archive to use the published release"
         )))
     }
+
+    pub(super) fn install_source(&self, asset_key: &str) -> io::Result<DistInstall> {
+        let dir = super::attach::private_download_dir(&format!("dist-{asset_key}"))?;
+        self.extract_entry(asset_key, dir)
+    }
+
+    fn extract_entry(&self, asset_key: &str, dir: PathBuf) -> io::Result<DistInstall> {
+        let result = self.extract_entry_inner(asset_key, &dir);
+        match result {
+            Ok((path, format)) => Ok(DistInstall {
+                path,
+                temporary_dir: dir,
+                format,
+            }),
+            Err(err) => {
+                let _ = fs::remove_dir_all(&dir);
+                Err(err)
+            }
+        }
+    }
+
+    fn extract_entry_inner(&self, asset_key: &str, dir: &Path) -> io::Result<(PathBuf, DistFormat)> {
+        let entry = self.entry(asset_key)?;
+        let payload = payload_file_name(&entry.path)?;
+        let sha256 = entry.sha256.clone();
+        let format = entry.format;
+
+        let file = File::open(&self.path)?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|err| {
+            invalid_data(format!(
+                "{} is not a readable {DIST_ARCHIVE_FILE}: {err}",
+                self.path.display()
+            ))
+        })?;
+
+        // `by_name` rejects duplicate central-directory names itself, so a
+        // crafted archive cannot smuggle a second payload under the same name.
+        let mut entry = archive.by_name(payload).map_err(|err| {
+            invalid_data(format!(
+                "{DIST_ARCHIVE_FILE} could not read payload {payload}: {err}"
+            ))
+        })?;
+        check_entry_size(entry.size())?;
+
+        let path = dir.join(payload);
+        let mut out = File::create(&path)?;
+        let written = io::copy(&mut entry.by_ref().take(MAX_DIST_ENTRY_BYTES + 1), &mut out)?;
+        if written > MAX_DIST_ENTRY_BYTES {
+            return Err(entry_too_large(written));
+        }
+
+        crate::checksum::verify_sha256(&path, &sha256)?;
+
+        #[cfg(unix)]
+        if format == DistFormat::Exe {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+        }
+
+        Ok((path, format))
+    }
 }
 
 /// Reports the archive path for `asset_key` without extracting anything.
@@ -150,6 +219,40 @@ fn locate_from(
         }
     }
     Ok(None)
+}
+
+fn payload_file_name(path: &str) -> io::Result<&str> {
+    if path.contains('\\') {
+        return Err(invalid_data(format!(
+            "{DIST_ARCHIVE_FILE} payload path {path} must use forward slashes and name a single file"
+        )));
+    }
+    let parsed = Path::new(path);
+    let mut components = parsed.components();
+    let single = components.next();
+    if components.next().is_some() || !matches!(single, Some(Component::Normal(_))) {
+        return Err(invalid_data(format!(
+            "{DIST_ARCHIVE_FILE} payload path {path} must name a single file inside the archive"
+        )));
+    }
+    parsed.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
+        invalid_data(format!(
+            "{DIST_ARCHIVE_FILE} payload path {path} is not valid UTF-8"
+        ))
+    })
+}
+
+fn check_entry_size(size: u64) -> io::Result<()> {
+    if size > MAX_DIST_ENTRY_BYTES {
+        return Err(entry_too_large(size));
+    }
+    Ok(())
+}
+
+fn entry_too_large(size: u64) -> io::Error {
+    invalid_data(format!(
+        "{DIST_ARCHIVE_FILE} payload entry is too large to install ({size} bytes, limit {MAX_DIST_ENTRY_BYTES})"
+    ))
 }
 
 fn read_manifest(path: &Path) -> io::Result<DistManifest> {
@@ -403,5 +506,123 @@ mod tests {
 
         let absent = locate_from(None, &config, None).expect("locate");
         assert!(absent.is_none());
+    }
+
+    fn archive_with(
+        name: &str,
+        manifest: serde_json::Value,
+        payloads: &[(&str, &[u8])],
+    ) -> DistArchive {
+        let dir = temp_dir(name);
+        DistArchive::open(write_archive(&dir, manifest, payloads)).expect("open archive")
+    }
+
+    #[test]
+    fn extracts_linux_payload_with_checksum() {
+        let archive = archive_with(
+            "extract-linux",
+            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION),
+            &[("herdr-linux-x86_64", b"payload")],
+        );
+        let dir = temp_dir("extract-linux-out");
+
+        let install = archive
+            .extract_entry("linux-x86_64", dir.clone())
+            .expect("extract");
+        assert_eq!(install.format, DistFormat::Exe);
+        assert_eq!(fs::read(&install.path).expect("read payload"), b"payload");
+        assert_eq!(
+            crate::checksum::file_sha256(&install.path).expect("hash"),
+            sha_hex(b"payload")
+        );
+        assert_eq!(install.temporary_dir, dir);
+    }
+
+    #[test]
+    fn rejects_checksum_mismatch_and_cleans_up() {
+        let mut manifest =
+            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION);
+        manifest["entries"]["linux-x86_64"]["sha256"] = json!("0".repeat(64));
+        let archive = archive_with("extract-bad-sha", manifest, &[("herdr-linux-x86_64", b"payload")]);
+        let dir = temp_dir("extract-bad-sha-out");
+
+        let err = archive
+            .extract_entry("linux-x86_64", dir.clone())
+            .expect_err("checksum mismatch must fail");
+        assert!(err.to_string().contains("sha256"), "{err}");
+        assert!(!dir.exists(), "temporary directory must be removed");
+    }
+
+    #[test]
+    fn check_entry_size_enforces_limit() {
+        assert!(check_entry_size(MAX_DIST_ENTRY_BYTES).is_ok());
+        let err = check_entry_size(MAX_DIST_ENTRY_BYTES + 1).expect_err("over limit");
+        assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn rejects_absolute_path_in_manifest() {
+        let mut manifest =
+            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION);
+        manifest["entries"]["linux-x86_64"]["path"] = json!("/etc/passwd");
+        let archive = archive_with("extract-absolute", manifest, &[("herdr-linux-x86_64", b"payload")]);
+
+        let err = archive
+            .extract_entry("linux-x86_64", temp_dir("extract-absolute-out"))
+            .expect_err("absolute path must fail");
+        assert!(err.to_string().contains("path"), "{err}");
+    }
+
+    #[test]
+    fn rejects_parent_component() {
+        let mut manifest =
+            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION);
+        manifest["entries"]["linux-x86_64"]["path"] = json!("../herdr");
+        let archive = archive_with("extract-parent", manifest, &[("herdr-linux-x86_64", b"payload")]);
+
+        let err = archive
+            .extract_entry("linux-x86_64", temp_dir("extract-parent-out"))
+            .expect_err("parent component must fail");
+        assert!(err.to_string().contains("path"), "{err}");
+    }
+
+    #[test]
+    fn windows_payload_lands_as_zip() {
+        let archive = archive_with(
+            "extract-windows",
+            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION),
+            &[("herdr-windows-x86_64.zip", b"windows")],
+        );
+        let dir = temp_dir("extract-windows-out");
+
+        let install = archive
+            .extract_entry("windows-x86_64", dir)
+            .expect("extract windows package");
+        assert_eq!(install.format, DistFormat::Zip);
+        assert_eq!(
+            install.path.file_name().and_then(|name| name.to_str()),
+            Some("herdr-windows-x86_64.zip")
+        );
+        assert_eq!(fs::read(&install.path).expect("read payload"), b"windows");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exe_payload_is_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let archive = archive_with(
+            "extract-executable",
+            valid_manifest(&crate::build_info::version(), crate::protocol::PROTOCOL_VERSION),
+            &[("herdr-linux-x86_64", b"payload")],
+        );
+        let install = archive
+            .extract_entry("linux-x86_64", temp_dir("extract-executable-out"))
+            .expect("extract");
+        let mode = fs::metadata(&install.path)
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o111, 0);
     }
 }
