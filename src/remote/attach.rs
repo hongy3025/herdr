@@ -1517,6 +1517,7 @@ fn prepare_discovered_remote_herdr(
         );
     }
     let override_binary = remote_binary_override_path()?;
+    let dist_description = dist_install_description(&remote_herdr.platform)?;
 
     if override_binary.is_none() {
         for candidate in candidates {
@@ -1558,7 +1559,11 @@ fn prepare_discovered_remote_herdr(
         confirm_remote_install(
             &ssh.destination(),
             &remote_herdr,
-            &install_source_description(&remote_herdr.platform, override_binary.as_deref()),
+            &install_source_description(
+                &remote_herdr.platform,
+                override_binary.as_deref(),
+                dist_description.as_deref(),
+            ),
         )?;
     }
     let source = resolve_install_source(&remote_herdr.platform, override_binary)?;
@@ -1611,6 +1616,7 @@ fn prepare_windows_remote_herdr(
 ) -> io::Result<PreparedRemoteHerdr> {
     let override_package = remote_binary_override_path()?;
     let custom_package = override_package.is_some();
+    let dist_description = dist_install_description(&remote_herdr.platform)?;
     if !custom_package {
         for candidate in candidates {
             if remote_binary_supports_endpoint_requirement(
@@ -1640,7 +1646,11 @@ fn prepare_windows_remote_herdr(
         confirm_remote_install(
             &ssh.destination(),
             &remote_herdr,
-            &install_source_description(&remote_herdr.platform, override_package.as_deref()),
+            &install_source_description(
+                &remote_herdr.platform,
+                override_package.as_deref(),
+                dist_description.as_deref(),
+            ),
         )?;
     }
     // Windows needs the complete package, including its app-local ConPTY runtime.
@@ -2087,11 +2097,16 @@ fn remote_binary_override_path() -> io::Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
-fn install_source_description(platform: &RemotePlatform, override_binary: Option<&Path>) -> String {
+fn install_source_description(
+    platform: &RemotePlatform,
+    override_binary: Option<&Path>,
+    dist_description: Option<&str>,
+) -> String {
     install_source_description_for(
         platform,
         override_binary,
         local_binary_can_seed_remote(platform),
+        dist_description,
     )
 }
 
@@ -2099,6 +2114,7 @@ fn install_source_description_for(
     platform: &RemotePlatform,
     override_binary: Option<&Path>,
     local_binary_can_seed_remote: bool,
+    dist_description: Option<&str>,
 ) -> String {
     if let Some(path) = override_binary {
         return format!("{REMOTE_BINARY_ENV_VAR} ({})", path.display());
@@ -2106,6 +2122,8 @@ fn install_source_description_for(
 
     if local_binary_can_seed_remote {
         "the current local herdr binary".to_string()
+    } else if let Some(description) = dist_description {
+        description.to_string()
     } else {
         format!(
             "the {} {} asset for {}",
@@ -2131,7 +2149,47 @@ fn resolve_install_source(
         }
     }
 
+    if let Some(source) = dist_install_source(platform)? {
+        return Ok(source);
+    }
+
     download_release_asset(platform)
+}
+
+fn dist_install_description(platform: &RemotePlatform) -> io::Result<Option<String>> {
+    crate::remote::dist::probe(&platform.asset_key())
+}
+
+fn dist_install_source(platform: &RemotePlatform) -> io::Result<Option<InstallSource>> {
+    let Some(path) = crate::remote::dist::DistArchive::locate()? else {
+        return Ok(None);
+    };
+    let archive = crate::remote::dist::DistArchive::open(path)?;
+    let install = archive.install_source(&platform.asset_key())?;
+    if let Err(err) = ensure_dist_format(platform, install.format) {
+        let _ = fs::remove_dir_all(&install.temporary_dir);
+        return Err(err);
+    }
+    Ok(Some(InstallSource::temporary(
+        install.path,
+        install.temporary_dir,
+    )))
+}
+
+fn ensure_dist_format(
+    platform: &RemotePlatform,
+    format: crate::remote::dist::DistFormat,
+) -> io::Result<()> {
+    if platform.is_windows() || format == crate::remote::dist::DistFormat::Exe {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "herdr-dist.zip entry for {} is a package archive (herdr-windows-x86_64.zip), not an executable for this platform",
+            platform.asset_key()
+        ),
+    ))
 }
 
 fn local_binary_can_seed_remote(platform: &RemotePlatform) -> bool {
@@ -6082,7 +6140,12 @@ function Get-Process {
             arch: "aarch64",
         };
         assert_eq!(
-            install_source_description_for(&platform, Some(Path::new("/tmp/herdr-aarch64")), false),
+            install_source_description_for(
+                &platform,
+                Some(Path::new("/tmp/herdr-aarch64")),
+                false,
+                Some("herdr-dist.zip (/tmp/herdr-dist.zip)")
+            ),
             "HERDR_REMOTE_BINARY (/tmp/herdr-aarch64)"
         );
     }
@@ -6092,7 +6155,7 @@ function Get-Process {
         let platform = RemotePlatform::local();
 
         assert_eq!(
-            install_source_description_for(&platform, None, true),
+            install_source_description_for(&platform, None, true, None),
             "the current local herdr binary"
         );
     }
@@ -6102,7 +6165,7 @@ function Get-Process {
         let platform = RemotePlatform::local();
 
         assert_eq!(
-            install_source_description_for(&platform, None, false),
+            install_source_description_for(&platform, None, false, None),
             format!(
                 "the {} {} asset for {}",
                 current_version(),
@@ -6110,6 +6173,53 @@ function Get-Process {
                 platform.asset_key()
             )
         );
+    }
+
+    #[test]
+    fn install_source_description_prefers_dist_archive() {
+        let platform = RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        };
+
+        assert_eq!(
+            install_source_description_for(
+                &platform,
+                None,
+                false,
+                Some("herdr-dist.zip (/tmp/herdr-dist.zip)")
+            ),
+            "herdr-dist.zip (/tmp/herdr-dist.zip)"
+        );
+    }
+
+    #[test]
+    fn install_source_description_prefers_local_binary_over_dist_archive() {
+        let platform = RemotePlatform::local();
+
+        assert_eq!(
+            install_source_description_for(
+                &platform,
+                None,
+                true,
+                Some("herdr-dist.zip (/tmp/herdr-dist.zip)")
+            ),
+            "the current local herdr binary"
+        );
+    }
+
+    #[test]
+    fn dist_zip_payload_is_rejected_for_non_windows_installs() {
+        let platform = RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        };
+
+        ensure_dist_format(&platform, crate::remote::dist::DistFormat::Exe)
+            .expect("exe payload");
+        let err = ensure_dist_format(&platform, crate::remote::dist::DistFormat::Zip)
+            .expect_err("zip payload must not install onto linux");
+        assert!(err.to_string().contains("herdr-windows-x86_64.zip"), "{err}");
     }
 
     #[test]
