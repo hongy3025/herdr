@@ -542,7 +542,6 @@ mod tests {
 
     #[test]
     fn rejects_payload_without_build_identity() {
-        let dir = temp_dir("payload-without-identity");
         let mut manifest = valid_manifest(
             &crate::build_info::version(),
             crate::protocol::PROTOCOL_VERSION,

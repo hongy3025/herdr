@@ -2,13 +2,9 @@
 
 pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Compiled-in identity read by the `herdr-dist.zip` packager.
-///
-/// `concat!` only accepts literals, so the protocol number is duplicated here;
-/// `dist_identity_marker_tracks_version_and_protocol` keeps it in sync with
-/// `PROTOCOL_VERSION`.
-/// Written by `build.rs`; `remote::dist` compares it with archives and scans
-/// payloads for it, so the bytes stay in the binary.
+// Compiled-in identity read by the `herdr-dist.zip` packager.
+// Written by `build.rs`; `remote::dist` compares it with archives and scans
+// payloads for it, so the bytes stay in the binary.
 include!(concat!(env!("OUT_DIR"), "/dist_identity.rs"));
 
 pub fn channel() -> &'static str {
