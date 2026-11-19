@@ -83,6 +83,7 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
         &remote_ssh,
         &prepared_remote.remote_herdr,
         prepared_remote.stop_after_install_approved,
+        false,
         remote.live_handoff,
         require_surface_interest,
     )?;
@@ -214,6 +215,7 @@ impl SavedSshSetup {
     pub(crate) fn prepare(
         mut self,
         session_name: &str,
+        force_install: bool,
     ) -> io::Result<Option<crate::client::endpoint::SshMachineMetadata>> {
         crate::session::validate_name(session_name)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
@@ -223,12 +225,19 @@ impl SavedSshSetup {
             remote_herdr,
             candidates,
         } = self;
-        let prepared =
-            prepare_discovered_remote_herdr(&ssh, remote_herdr, &candidates, false, true)?;
+        let prepared = prepare_discovered_remote_herdr(
+            &ssh,
+            remote_herdr,
+            &candidates,
+            false,
+            true,
+            force_install,
+        )?;
         ensure_remote_server_ready(
             &ssh,
             &prepared.remote_herdr,
             prepared.stop_after_install_approved,
+            force_install,
             false,
             true,
         )?;
@@ -1497,6 +1506,7 @@ pub(super) fn prepare_remote_herdr(
         &candidates,
         live_handoff_enabled,
         require_surface_interest,
+        false,
     )
 }
 
@@ -1506,7 +1516,9 @@ fn prepare_discovered_remote_herdr(
     candidates: &[RemoteHerdr],
     live_handoff_enabled: bool,
     require_surface_interest: bool,
+    force_install: bool,
 ) -> io::Result<PreparedRemoteHerdr> {
+    let override_binary = remote_binary_override_path()?;
     if remote_herdr.platform.is_windows() {
         return prepare_windows_remote_herdr(
             ssh,
@@ -1514,11 +1526,12 @@ fn prepare_discovered_remote_herdr(
             candidates,
             live_handoff_enabled,
             require_surface_interest,
+            force_install,
+            override_binary,
         );
     }
-    let override_binary = remote_binary_override_path()?;
 
-    if override_binary.is_none() {
+    if override_binary.is_none() && !force_install {
         for candidate in candidates {
             if remote_binary_supports_endpoint_requirement(ssh, candidate, require_surface_interest)
                 .unwrap_or(false)
@@ -1541,6 +1554,19 @@ fn prepare_discovered_remote_herdr(
         }
     }
 
+    // Only inspect the archive once an install is actually needed: a stale
+    // sidecar must not block connecting to a remote that is already compatible.
+    let dist_description = if override_binary.is_none() {
+        dist_install_description(&remote_herdr.platform)?
+    } else {
+        None
+    };
+    require_custom_source_for_force(
+        force_install,
+        override_binary.is_some(),
+        dist_description.is_some(),
+    )?;
+
     let mut stop_after_install_approved = false;
     if let Some(status_probe_herdr) = candidates.first().or_else(|| {
         remote_binary_exists(ssh, &remote_herdr)
@@ -1552,16 +1578,25 @@ fn prepare_discovered_remote_herdr(
             status_probe_herdr,
             live_handoff_enabled,
             require_surface_interest,
+            force_install,
         )?;
     }
     if !stop_after_install_approved {
         confirm_remote_install(
             &ssh.destination(),
             &remote_herdr,
-            &install_source_description(&remote_herdr.platform, override_binary.as_deref()),
+            &install_source_description(
+                &remote_herdr.platform,
+                override_binary.as_deref(),
+                dist_description.as_deref(),
+            ),
         )?;
     }
-    let source = resolve_install_source(&remote_herdr.platform, override_binary)?;
+    let source = resolve_install_source(
+        &remote_herdr.platform,
+        override_binary,
+        dist_description.is_some(),
+    )?;
     let install_result = ssh.install_herdr(&remote_herdr, &source.path);
     source.cleanup();
     install_result?;
@@ -1608,10 +1643,11 @@ fn prepare_windows_remote_herdr(
     candidates: &[RemoteHerdr],
     live_handoff_enabled: bool,
     require_surface_interest: bool,
+    force_install: bool,
+    override_package: Option<PathBuf>,
 ) -> io::Result<PreparedRemoteHerdr> {
-    let override_package = remote_binary_override_path()?;
     let custom_package = override_package.is_some();
-    if !custom_package {
+    if !custom_package && !force_install {
         for candidate in candidates {
             if remote_binary_supports_endpoint_requirement(
                 ssh,
@@ -1625,6 +1661,12 @@ fn prepare_windows_remote_herdr(
             }
         }
     }
+    let dist_description = if custom_package {
+        None
+    } else {
+        dist_install_description(&remote_herdr.platform)?
+    };
+    require_custom_source_for_force(force_install, custom_package, dist_description.is_some())?;
 
     let stop_after_install_approved = if let Some(candidate) = candidates.first() {
         confirm_remote_install_with_running_server(
@@ -1632,6 +1674,7 @@ fn prepare_windows_remote_herdr(
             candidate,
             live_handoff_enabled,
             require_surface_interest,
+            force_install,
         )?
     } else {
         false
@@ -1640,20 +1683,26 @@ fn prepare_windows_remote_herdr(
         confirm_remote_install(
             &ssh.destination(),
             &remote_herdr,
-            &install_source_description(&remote_herdr.platform, override_package.as_deref()),
+            &install_source_description(
+                &remote_herdr.platform,
+                override_package.as_deref(),
+                dist_description.as_deref(),
+            ),
         )?;
     }
     // Windows needs the complete package, including its app-local ConPTY runtime.
-    let source = match override_package {
-        Some(path) => InstallSource::persistent(path),
-        None => download_release_asset(&remote_herdr.platform)?,
-    };
+    let (source, used_dist) = windows_install_source(
+        override_package,
+        &remote_herdr.platform,
+        dist_description.is_some(),
+    )?;
+    let custom_identity = custom_package || used_dist;
     let install_result = (|| {
         let sha256 = crate::checksum::file_sha256(&source.path)?;
         ssh.install_windows_herdr(
             &remote_herdr,
             &source.path,
-            &windows_package_identity(custom_package, &sha256),
+            &windows_package_identity(custom_identity, &sha256),
             &sha256,
         )
     })();
@@ -2087,11 +2136,33 @@ fn remote_binary_override_path() -> io::Result<Option<PathBuf>> {
     Ok(Some(path))
 }
 
-fn install_source_description(platform: &RemotePlatform, override_binary: Option<&Path>) -> String {
+fn require_custom_source_for_force(
+    force_install: bool,
+    has_override: bool,
+    has_dist_archive: bool,
+) -> io::Result<()> {
+    if !force_install || has_override || has_dist_archive {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "machine add --force needs a custom install source: set {REMOTE_BINARY_ENV_VAR} or place herdr-dist.zip next to herdr or in {}",
+            crate::config::config_dir().display()
+        ),
+    ))
+}
+
+fn install_source_description(
+    platform: &RemotePlatform,
+    override_binary: Option<&Path>,
+    dist_description: Option<&str>,
+) -> String {
     install_source_description_for(
         platform,
         override_binary,
         local_binary_can_seed_remote(platform),
+        dist_description,
     )
 }
 
@@ -2099,6 +2170,7 @@ fn install_source_description_for(
     platform: &RemotePlatform,
     override_binary: Option<&Path>,
     local_binary_can_seed_remote: bool,
+    dist_description: Option<&str>,
 ) -> String {
     if let Some(path) = override_binary {
         return format!("{REMOTE_BINARY_ENV_VAR} ({})", path.display());
@@ -2106,6 +2178,8 @@ fn install_source_description_for(
 
     if local_binary_can_seed_remote {
         "the current local herdr binary".to_string()
+    } else if let Some(description) = dist_description {
+        description.to_string()
     } else {
         format!(
             "the {} {} asset for {}",
@@ -2119,6 +2193,7 @@ fn install_source_description_for(
 fn resolve_install_source(
     platform: &RemotePlatform,
     override_binary: Option<PathBuf>,
+    dist_expected: bool,
 ) -> io::Result<InstallSource> {
     if let Some(path) = override_binary {
         return Ok(InstallSource::persistent(path));
@@ -2131,7 +2206,54 @@ fn resolve_install_source(
         }
     }
 
-    download_release_asset(platform)
+    match dist_install_source(platform)? {
+        Some(source) => Ok(source),
+        None if dist_expected => Err(missing_dist_archive()),
+        None => download_release_asset(platform),
+    }
+}
+
+fn dist_install_description(platform: &RemotePlatform) -> io::Result<Option<String>> {
+    crate::remote::dist::probe(&platform.asset_key())
+}
+
+fn dist_install_source(platform: &RemotePlatform) -> io::Result<Option<InstallSource>> {
+    let Some(path) = crate::remote::dist::DistArchive::locate()? else {
+        return Ok(None);
+    };
+    let archive = crate::remote::dist::DistArchive::open(path)?;
+    let install = archive.install_source(&platform.asset_key())?;
+    if let Err(err) = ensure_dist_format(platform, install.format) {
+        let _ = fs::remove_dir_all(&install.temporary_dir);
+        return Err(err);
+    }
+    Ok(Some(InstallSource::temporary(
+        install.path,
+        install.temporary_dir,
+    )))
+}
+
+fn ensure_dist_format(
+    platform: &RemotePlatform,
+    format: crate::remote::dist::DistFormat,
+) -> io::Result<()> {
+    match (platform.is_windows(), format) {
+        (true, crate::remote::dist::DistFormat::Zip)
+        | (false, crate::remote::dist::DistFormat::Exe) => return Ok(()),
+        _ => {}
+    }
+    let expected = if platform.is_windows() {
+        "a complete Windows package (herdr-windows-x86_64.zip)"
+    } else {
+        "an executable"
+    };
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "herdr-dist.zip entry for {} must be {expected}",
+            platform.asset_key()
+        ),
+    ))
 }
 
 fn local_binary_can_seed_remote(platform: &RemotePlatform) -> bool {
@@ -2150,6 +2272,28 @@ fn windows_package_identity(custom: bool, sha256: &str) -> String {
     } else {
         current_version()
     }
+}
+
+fn windows_install_source(
+    override_package: Option<PathBuf>,
+    platform: &RemotePlatform,
+    dist_expected: bool,
+) -> io::Result<(InstallSource, bool)> {
+    if let Some(path) = override_package {
+        return Ok((InstallSource::persistent(path), false));
+    }
+    match dist_install_source(platform)? {
+        Some(source) => Ok((source, true)),
+        None if dist_expected => Err(missing_dist_archive()),
+        None => Ok((download_release_asset(platform)?, false)),
+    }
+}
+
+fn missing_dist_archive() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        "herdr-dist.zip was removed after the install prompt; the remote was not changed",
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2187,6 +2331,7 @@ fn ensure_remote_server_ready(
     ssh: &RemoteSsh,
     remote_herdr: &RemoteHerdr,
     stop_after_install_approved: bool,
+    force_restart: bool,
     live_handoff_enabled: bool,
     require_surface_interest: bool,
 ) -> io::Result<()> {
@@ -2203,13 +2348,28 @@ fn ensure_remote_server_ready(
         return Ok(());
     };
 
-    let Some(reason) = remote_server_restart_reason(
+    let reason = remote_server_restart_reason(
         endpoint_protocol_generation,
         detached_server_daemon,
         require_surface_interest,
         surface_interest,
         health_check,
-    ) else {
+    );
+    let Some(reason) = reason else {
+        if !force_restart {
+            return Ok(());
+        }
+        if stop_after_install_approved {
+            stop_remote_server(ssh, remote_herdr)?;
+            return Ok(());
+        }
+        if confirm_remote_server_stop(
+            &ssh.destination(),
+            version.as_deref(),
+            RemoteServerRestartReason::ForcedInstall,
+        )? {
+            stop_remote_server(ssh, remote_herdr)?;
+        }
         return Ok(());
     };
 
@@ -2239,6 +2399,7 @@ fn confirm_remote_install_with_running_server(
     remote_herdr: &RemoteHerdr,
     live_handoff_enabled: bool,
     require_surface_interest: bool,
+    force_restart: bool,
 ) -> io::Result<bool> {
     let target = ssh.destination();
     let status = match remote_server_status(ssh, remote_herdr, require_surface_interest) {
@@ -2287,6 +2448,7 @@ fn confirm_remote_install_with_running_server(
         live_handoff_enabled,
         require_surface_interest,
     );
+    let plan = forced_install_running_server_plan(plan, force_restart);
 
     if plan == RemoteInstallRunningServerPlan::KeepRunning {
         if io::stdin().is_terminal() {
@@ -2524,6 +2686,7 @@ fn confirm_remote_server_stop(
         RemoteServerRestartReason::EndpointProtocol
             | RemoteServerRestartReason::SurfaceInterest
             | RemoteServerRestartReason::HealthCheck
+            | RemoteServerRestartReason::ForcedInstall
     );
     if !io::stdin().is_terminal() {
         if required_upgrade {
@@ -2563,6 +2726,9 @@ fn confirm_remote_server_stop(
             eprintln!(
                 "the remote server was started by a herdr build that may not survive SSH connection loss. restart it so network drops disconnect only this client."
             );
+        }
+        RemoteServerRestartReason::ForcedInstall => {
+            eprintln!("the remote server must restart to run the newly installed herdr binary.");
         }
     }
 
@@ -2806,7 +2972,7 @@ fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
     Ok(asset)
 }
 
-fn private_download_dir(asset_key: &str) -> io::Result<PathBuf> {
+pub(super) fn private_download_dir(asset_key: &str) -> io::Result<PathBuf> {
     let base = crate::platform::remote_private_temp_base();
     fs::create_dir_all(&base)?;
     for attempt in 0..100 {
@@ -6082,7 +6248,12 @@ function Get-Process {
             arch: "aarch64",
         };
         assert_eq!(
-            install_source_description_for(&platform, Some(Path::new("/tmp/herdr-aarch64")), false),
+            install_source_description_for(
+                &platform,
+                Some(Path::new("/tmp/herdr-aarch64")),
+                false,
+                Some("herdr-dist.zip (/tmp/herdr-dist.zip)")
+            ),
             "HERDR_REMOTE_BINARY (/tmp/herdr-aarch64)"
         );
     }
@@ -6092,7 +6263,7 @@ function Get-Process {
         let platform = RemotePlatform::local();
 
         assert_eq!(
-            install_source_description_for(&platform, None, true),
+            install_source_description_for(&platform, None, true, None),
             "the current local herdr binary"
         );
     }
@@ -6102,7 +6273,7 @@ function Get-Process {
         let platform = RemotePlatform::local();
 
         assert_eq!(
-            install_source_description_for(&platform, None, false),
+            install_source_description_for(&platform, None, false, None),
             format!(
                 "the {} {} asset for {}",
                 current_version(),
@@ -6113,13 +6284,136 @@ function Get-Process {
     }
 
     #[test]
+    fn install_source_description_prefers_dist_archive() {
+        let platform = RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        };
+
+        assert_eq!(
+            install_source_description_for(
+                &platform,
+                None,
+                false,
+                Some("herdr-dist.zip (/tmp/herdr-dist.zip)")
+            ),
+            "herdr-dist.zip (/tmp/herdr-dist.zip)"
+        );
+    }
+
+    #[test]
+    fn install_source_description_prefers_local_binary_over_dist_archive() {
+        let platform = RemotePlatform::local();
+
+        assert_eq!(
+            install_source_description_for(
+                &platform,
+                None,
+                true,
+                Some("herdr-dist.zip (/tmp/herdr-dist.zip)")
+            ),
+            "the current local herdr binary"
+        );
+    }
+
+    #[test]
+    fn dist_zip_payload_is_rejected_for_non_windows_installs() {
+        let platform = RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        };
+
+        ensure_dist_format(&platform, crate::remote::dist::DistFormat::Exe).expect("exe payload");
+        let err = ensure_dist_format(&platform, crate::remote::dist::DistFormat::Zip)
+            .expect_err("zip payload must not install onto linux");
+        assert!(err.to_string().contains("executable"), "{err}");
+
+        let windows = RemotePlatform {
+            os: "windows",
+            arch: "x86_64",
+        };
+        ensure_dist_format(&windows, crate::remote::dist::DistFormat::Zip)
+            .expect("windows package");
+        let err = ensure_dist_format(&windows, crate::remote::dist::DistFormat::Exe)
+            .expect_err("bare exe must not install onto windows");
+        assert!(err.to_string().contains("Windows package"), "{err}");
+    }
+
+    #[test]
+    fn windows_package_identity_marks_custom_packages() {
+        assert_eq!(
+            windows_package_identity(true, "abc"),
+            format!("{}-custom.abc", current_version())
+        );
+        assert_eq!(windows_package_identity(false, "abc"), current_version());
+    }
+
+    #[test]
+    fn windows_install_source_prefers_override_without_touching_the_archive() {
+        let platform = RemotePlatform {
+            os: "windows",
+            arch: "x86_64",
+        };
+
+        // `dist_expected` is deliberately true: the override must win before any
+        // archive lookup, so a stale sidecar cannot break the explicit source.
+        let (source, used_dist) =
+            windows_install_source(Some(PathBuf::from("/tmp/custom.zip")), &platform, true)
+                .expect("override selection");
+        assert_eq!(source.path, PathBuf::from("/tmp/custom.zip"));
+        assert!(source.temporary_dir.is_none());
+        assert!(!used_dist);
+    }
+
+    #[test]
+    fn missing_dist_archive_names_the_file() {
+        let error = missing_dist_archive();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("herdr-dist.zip"), "{error}");
+    }
+
+    #[test]
+    fn forced_install_turns_keep_running_into_stop_required() {
+        let plan = super::forced_install_running_server_plan(
+            RemoteInstallRunningServerPlan::KeepRunning,
+            true,
+        );
+        assert_eq!(
+            plan,
+            RemoteInstallRunningServerPlan::StopRequired(RemoteServerRestartReason::ForcedInstall)
+        );
+        assert_eq!(
+            super::forced_install_running_server_plan(
+                RemoteInstallRunningServerPlan::KeepRunning,
+                false
+            ),
+            RemoteInstallRunningServerPlan::KeepRunning
+        );
+    }
+
+    #[test]
+    fn force_requires_a_custom_install_source() {
+        let err = require_custom_source_for_force(true, false, false)
+            .expect_err("force without a custom source must fail");
+        let message = err.to_string();
+        assert!(message.contains("--force"), "{message}");
+        assert!(message.contains("herdr-dist.zip"), "{message}");
+        assert!(message.contains("HERDR_REMOTE_BINARY"), "{message}");
+
+        require_custom_source_for_force(false, false, false).expect("force not requested");
+        require_custom_source_for_force(true, true, false).expect("override source");
+        require_custom_source_for_force(true, false, true).expect("dist source");
+    }
+
+    #[test]
     fn resolve_install_source_uses_override_binary_without_temporary_cleanup() {
         let platform = RemotePlatform {
             os: "linux",
             arch: "aarch64",
         };
-        let source = resolve_install_source(&platform, Some(PathBuf::from("/tmp/herdr-aarch64")))
-            .expect("override source");
+        let source =
+            resolve_install_source(&platform, Some(PathBuf::from("/tmp/herdr-aarch64")), true)
+                .expect("override source");
         assert_eq!(source.path, PathBuf::from("/tmp/herdr-aarch64"));
         assert!(source.temporary_dir.is_none());
     }

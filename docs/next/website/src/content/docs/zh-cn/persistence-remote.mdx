@@ -102,6 +102,16 @@ herdr --remote workbox --handoff
 HERDR_REMOTE_BINARY=target/release/herdr herdr --remote workbox
 ```
 
+## 内置远程分发归档
+
+要把自定义构建安装到其他机器，先打包各平台产物，把 `herdr-dist.zip` 放在客户端旁边:
+
+```bash
+just dist-archive path/to/herdr-linux-x86_64 herdr-windows-x86_64.zip
+```
+
+Herdr 依次在 `HERDR_DIST_ARCHIVE`、Herdr 配置目录（`~/.config/herdr` 或 `%APPDATA%\herdr`）和运行中可执行文件所在目录查找 `herdr-dist.zip`。归档存在时，远程安装会用它替代公开发布清单。两份产物必须与客户端来自同一构建：缺少目标平台、构建标识/版本/协议不一致、校验和失败都会在写入远端之前中止安装。要替换已运行兼容构建的机器，使用 `herdr machine add --force`。
+
 ## 远程命名会话
 
 用 `--session` 搭配 `--remote` 连接远程主机上的命名会话:

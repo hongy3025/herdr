@@ -2,6 +2,11 @@
 
 pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+// Compiled-in identity read by the `herdr-dist.zip` packager.
+// `build.rs` generates it; `remote::dist` formats it into archive errors and
+// scans payloads for it, so the bytes stay in the binary.
+include!(concat!(env!("OUT_DIR"), "/dist_identity.rs"));
+
 pub fn channel() -> &'static str {
     non_empty(option_env!("HERDR_BUILD_CHANNEL")).unwrap_or("stable")
 }
@@ -40,5 +45,17 @@ mod tests {
     #[test]
     fn stable_version_defaults_to_cargo_version() {
         assert!(!super::version().is_empty());
+    }
+
+    #[test]
+    fn dist_identity_marker_tracks_the_build_identity() {
+        let parts = super::DIST_IDENTITY_MARKER.split(':').collect::<Vec<_>>();
+        assert_eq!(parts.len(), 7, "{}", super::DIST_IDENTITY_MARKER);
+        assert_eq!(parts[0], "herdr-dist-identity");
+        assert_eq!(parts[1], "2");
+        assert_eq!(parts[2], env!("CARGO_PKG_VERSION"));
+        assert_eq!(parts[3], crate::protocol::PROTOCOL_VERSION.to_string());
+        assert_eq!(parts[4], super::channel());
+        assert_eq!(parts[5], super::build_id().unwrap_or("-"));
     }
 }

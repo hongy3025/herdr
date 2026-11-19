@@ -1,5 +1,6 @@
 mod args;
 mod attach;
+mod dist;
 mod host;
 mod process;
 mod restart_policy;

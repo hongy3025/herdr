@@ -53,6 +53,8 @@ On Windows servers, setup also checks executables used by Herdr processes owned 
 
 Herdr checks both the installed binary and the running server. It starts the requested background server before saving the profile. Compatible client and server versions do not have to match. Missing or incompatible installations go through an approval-based setup. When the running server needs replacement, setup asks before stopping it and its pane processes, then starts the compatible server. The default answer is No. If installation and replacement are both needed, one confirmation covers them. `machine add` does not use experimental live handoff. Cancelling or failing setup leaves the profile unsaved.
 
+When you ship a custom build as `herdr-dist.zip`, setup installs from that archive instead of the published release; see [Bundled remote distribution archive](/docs/persistence-remote/#bundled-remote-distribution-archive). Add `--force` to `machine add` to replace an already-compatible remote build from the archive or `HERDR_REMOTE_BINARY`; setup then stops and restarts the remote server, and fails when neither custom source exists.
+
 Run `herdr` to open the UI. If a local client is already open, added and enabled machines normally appear within a second and connect in the background without changing your selection. An in-progress machine switch finishes before profile changes are applied. The remote server keeps running after setup exits.
 
 ## Switch between machines

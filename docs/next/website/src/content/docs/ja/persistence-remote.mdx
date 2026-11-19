@@ -102,6 +102,16 @@ Linux/macOS ホストでは、プラットフォームが一致する直接イ�
 HERDR_REMOTE_BINARY=target/release/herdr herdr --remote workbox
 ```
 
+## 同梱のリモート配布アーカイブ
+
+カスタムビルドを他のマシンへインストールするには、プラットフォームごとのペイロードをまとめて `herdr-dist.zip` を作成し、クライアントのそばに置きます:
+
+```bash
+just dist-archive path/to/herdr-linux-x86_64 herdr-windows-x86_64.zip
+```
+
+Herdr は `HERDR_DIST_ARCHIVE`、Herdr 設定ディレクトリ（`~/.config/herdr` または `%APPDATA%\herdr`）、実行中バイナリのディレクトリの順に `herdr-dist.zip` を探します。アーカイブがある場合、リモートインストールでは公開リリースマニフェストの代わりにこれを使います。両方のペイロードはクライアントと同じビルドである必要があります。対象プラットフォームがない、ビルド同一性・バージョン・プロトコルが異なる、チェックサムが一致しない場合は、リモートに何も書き込む前にインストールを中止します。互換ビルドが動作中のマシンを置き換えるには `herdr machine add --force` を使います。
+
 ## リモートの名前付きセッション
 
 リモートホスト上の名前付きセッションにアタッチするには、`--remote` と一緒に `--session` を使います:

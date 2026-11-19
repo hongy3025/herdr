@@ -4,6 +4,7 @@ pub(super) enum RemoteServerRestartReason {
     SurfaceInterest,
     HealthCheck,
     DaemonDetach,
+    ForcedInstall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,20 @@ pub(super) fn remote_install_running_server_plan(
         return RemoteInstallRunningServerPlan::LiveHandoff;
     }
     RemoteInstallRunningServerPlan::StopRequired(reason)
+}
+
+/// `machine add --force` replaces the installed binary, so a compatible running
+/// server still has to stop and restart from the new binary.
+pub(super) fn forced_install_running_server_plan(
+    plan: RemoteInstallRunningServerPlan,
+    force_restart: bool,
+) -> RemoteInstallRunningServerPlan {
+    if force_restart && plan == RemoteInstallRunningServerPlan::KeepRunning {
+        return RemoteInstallRunningServerPlan::StopRequired(
+            RemoteServerRestartReason::ForcedInstall,
+        );
+    }
+    plan
 }
 
 #[cfg(test)]
