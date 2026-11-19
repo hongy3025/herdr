@@ -1519,12 +1519,6 @@ fn prepare_discovered_remote_herdr(
     force_install: bool,
 ) -> io::Result<PreparedRemoteHerdr> {
     let override_binary = remote_binary_override_path()?;
-    let dist_description = dist_install_description(&remote_herdr.platform)?;
-    require_custom_source_for_force(
-        force_install,
-        override_binary.is_some(),
-        dist_description.is_some(),
-    )?;
     if remote_herdr.platform.is_windows() {
         return prepare_windows_remote_herdr(
             ssh,
@@ -1534,7 +1528,6 @@ fn prepare_discovered_remote_herdr(
             require_surface_interest,
             force_install,
             override_binary,
-            dist_description,
         );
     }
 
@@ -1560,6 +1553,15 @@ fn prepare_discovered_remote_herdr(
             });
         }
     }
+
+    // Only inspect the archive once an install is actually needed: a stale
+    // sidecar must not block connecting to a remote that is already compatible.
+    let dist_description = dist_install_description(&remote_herdr.platform)?;
+    require_custom_source_for_force(
+        force_install,
+        override_binary.is_some(),
+        dist_description.is_some(),
+    )?;
 
     let mut stop_after_install_approved = false;
     if let Some(status_probe_herdr) = candidates.first().or_else(|| {
@@ -1635,7 +1637,6 @@ fn prepare_windows_remote_herdr(
     require_surface_interest: bool,
     force_install: bool,
     override_package: Option<PathBuf>,
-    dist_description: Option<String>,
 ) -> io::Result<PreparedRemoteHerdr> {
     let custom_package = override_package.is_some();
     if !custom_package && !force_install {
@@ -1652,6 +1653,8 @@ fn prepare_windows_remote_herdr(
             }
         }
     }
+    let dist_description = dist_install_description(&remote_herdr.platform)?;
+    require_custom_source_for_force(force_install, custom_package, dist_description.is_some())?;
 
     let stop_after_install_approved = if let Some(candidate) = candidates.first() {
         confirm_remote_install_with_running_server(
