@@ -375,9 +375,8 @@ pub(super) fn render_agent_row(
     related: bool,
 ) {
     let palette = &config.palette;
-    let row_style = if related {
-        Style::default().bg(super::sidebar::workspace_selection_background(palette))
-    } else if row.focused {
+    let highlighted = row.focused || related;
+    let row_style = if highlighted {
         Style::default().bg(palette.active_row_bg)
     } else {
         Style::default()
@@ -399,7 +398,7 @@ pub(super) fn render_agent_row(
     } else {
         row.rows.clone()
     };
-    if row.focused || related {
+    if highlighted {
         buffer.set_style(rect, row_style);
     }
     // A one-cell gutter marks the pane that currently has focus. Reserving it

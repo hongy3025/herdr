@@ -36,15 +36,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         if let Some(target) = self.navigation_target(&press.endpoint_id, &press.workspace_id) {
-            if self
-                .linked_workspace
-                .as_ref()
-                .is_some_and(|current| current == &target)
-            {
-                self.linked_workspace = None;
-            } else {
-                self.linked_workspace = Some(target);
-            }
+            self.linked_workspace = Some(target);
             outcome.repaint = true;
         }
         self.focus_or_activate(

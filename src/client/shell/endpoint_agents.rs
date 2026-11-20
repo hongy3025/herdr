@@ -6,13 +6,16 @@ pub(super) fn render_collapsed(
     area: Rect,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
+    selected: Option<&super::WorkspaceNavigationTarget>,
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
 ) {
     let rows = agent_rows(endpoints, active_endpoint_id, config);
     for (index, row) in rows.into_iter().take(area.height as usize).enumerate() {
         let rect = Rect::new(area.x, area.y + index as u16, area.width, 1);
-        if row.agent.focused {
+        let related = selected
+            .is_some_and(|target| target.matches(&row.endpoint_id, &row.agent.workspace_id));
+        if row.agent.focused || related {
             buffer.set_style(rect, Style::default().bg(config.palette.active_row_bg));
         }
         let initial = row.machine_label.chars().next().unwrap_or('?');

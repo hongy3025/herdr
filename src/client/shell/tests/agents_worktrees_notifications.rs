@@ -1437,9 +1437,7 @@ fn selected_space_highlights_its_agent_rows() {
     let mut config = Config::default();
     config.ui.sidebar_width = 30;
     let shell_config = ClientShellConfig::from_config(&config);
-    let linked_bg = crate::protocol::color_to_u32(super::sidebar::workspace_selection_background(
-        &shell_config.palette,
-    ));
+    let linked_bg = crate::protocol::color_to_u32(shell_config.palette.active_row_bg);
     let mut projected = space_agent_snapshot();
     projected.agents[0].focused = true;
     let mut state = ClientShellState::new(shell_config);
@@ -1492,11 +1490,9 @@ fn click_space_row(state: &mut ClientShellState, column: u16, row: u16) {
 }
 
 #[test]
-fn clicking_a_space_links_its_agents_until_clicked_again() {
+fn clicking_a_space_keeps_its_agents_linked_on_repeat_clicks() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    let linked_bg = crate::protocol::color_to_u32(super::sidebar::workspace_selection_background(
-        &state.config.palette,
-    ));
+    let linked_bg = crate::protocol::color_to_u32(state.config.palette.active_row_bg);
     state.set_snapshot(Box::new(space_agent_snapshot()));
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("sidebar frame");
@@ -1516,10 +1512,13 @@ fn clicking_a_space_links_its_agents_until_clicked_again() {
     }
 
     click_space_row(&mut state, rect.x + 1, rect.y + 1);
-    let unlinked = state.compose(106, 30).expect("sidebar frame");
+    let relinked = state.compose(106, 30).expect("sidebar frame");
     for agent in &agents {
-        let index = agent.y as usize * unlinked.width as usize + agent.x as usize + 2;
-        assert_ne!(unlinked.cells[index].bg, linked_bg, "second click unlinks");
+        let index = agent.y as usize * relinked.width as usize + agent.x as usize + 2;
+        assert_eq!(
+            relinked.cells[index].bg, linked_bg,
+            "second click keeps the link"
+        );
     }
 }
 
@@ -1583,9 +1582,7 @@ fn clicking_an_agent_relinks_the_space_and_clears_unrelated_rows() {
     ];
 
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    let linked_bg = crate::protocol::color_to_u32(super::sidebar::workspace_selection_background(
-        &state.config.palette,
-    ));
+    let linked_bg = crate::protocol::color_to_u32(state.config.palette.active_row_bg);
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("sidebar frame");
@@ -1614,7 +1611,7 @@ fn clicking_an_agent_relinks_the_space_and_clears_unrelated_rows() {
     assert_eq!(cell(&second_link, agents[1]), linked_bg);
     assert_ne!(cell(&second_link, agents[0]), linked_bg);
     assert_eq!(space_cell(&second_link, second_space), linked_bg);
-    assert_ne!(space_cell(&second_link, first_space), linked_bg);
+    assert_eq!(space_cell(&second_link, first_space), linked_bg);
 }
 
 #[test]

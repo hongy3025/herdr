@@ -131,9 +131,11 @@ pub(super) fn render_collapsed(
             }
             let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
             let focused = active && workspace.focused;
-            let selected = state.selected_workspace_id.is_some_and(|target| {
+            let matches_workspace = |target: &WorkspaceNavigationTarget| {
                 target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
-            });
+            };
+            let selected = state.selected_workspace_id.is_some_and(matches_workspace);
+            let linked = state.linked_workspace_id.is_some_and(matches_workspace);
             let selection_background = if palette.selection_bg == ratatui::style::Color::Reset {
                 palette.active_row_bg
             } else {
@@ -141,7 +143,7 @@ pub(super) fn render_collapsed(
             };
             if selected {
                 buffer.set_style(rect, Style::default().bg(selection_background));
-            } else if focused {
+            } else if focused || linked {
                 buffer.set_style(
                     rect,
                     Style::default().bg(super::sidebar::workspace_active_background(
@@ -211,6 +213,7 @@ pub(super) fn render_collapsed(
         detail_area,
         state.endpoints,
         state.active_endpoint_id,
+        state.selected_workspace_id.or(state.linked_workspace_id),
         config,
         hits,
     );
@@ -485,9 +488,11 @@ pub(super) fn render_expanded(
                     rect.height,
                 );
                 let endpoint_active = &endpoint.endpoint_id == state.active_endpoint_id;
-                let selected = state.selected_workspace_id.is_some_and(|target| {
+                let matches_workspace = |target: &WorkspaceNavigationTarget| {
                     target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
-                });
+                };
+                let selected = state.selected_workspace_id.is_some_and(matches_workspace);
+                let linked = state.linked_workspace_id.is_some_and(matches_workspace);
                 let mut widgets = super::sidebar::SpaceRowWidgets::default();
                 super::sidebar::render_workspace_rows(
                     buffer,
@@ -499,6 +504,7 @@ pub(super) fn render_expanded(
                         rows: tokens,
                         focused: endpoint_active && workspace.focused,
                         selected,
+                        linked,
                         navigating: state.selected_workspace_id.is_some(),
                         dragged: false,
                         palette,
@@ -603,7 +609,7 @@ pub(super) fn render_expanded(
         active_snapshot.and_then(|snapshot| snapshot.agent_view_label.as_deref()),
         state.endpoints,
         state.active_endpoint_id,
-        state.selected_workspace_id,
+        state.selected_workspace_id.or(state.linked_workspace_id),
         config,
         state.agent_scroll,
         hits,

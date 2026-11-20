@@ -160,7 +160,7 @@ herdr pane report-metadata w1:p1 \
 
 内置的 Oh My Pi 集成在工作时上报当前工具意图,并在回合结束后上报最终助手回复的摘要预览。
 
-展开后的 Space 行会把目录名、Git 同步数量、tab 数量徽标和所有 tab 中每个 pane 的状态点放在第一行；切换 tab 或 pane 不会改变状态点集合。branch 独占第二行。有 pane 关联 agent 时，第三行显示优先级最高的 agent 名称和状态文本（blocked、done、working、idle、unknown）；idle 和 unknown 使用状态名，不显示旧状态消息。agent 名称使用主题强调色，状态文本使用更亮的前景色。tab 数量徽标仍按其它 tab 的最高状态着色。点击某个 space 会持续高亮 Agents 面板中属于它的 agent，直到点击其它 space（或再次点击同一个）；点击某个 agent 则把关联切换到它所属的 space。当前有焦点的面板对应的 agent 带有绿色激活标记。Agents 面板每项保持三行：第一行是原有 context，第二行 agent 名称，第三行状态文本。排序和交互保持不变。
+展开后的 Space 行会把目录名、Git 同步数量、tab 数量徽标和所有 tab 中每个 pane 的状态点放在第一行；切换 tab 或 pane 不会改变状态点集合。branch 独占第二行。有 pane 关联 agent 时，第三行显示优先级最高的 agent 名称和状态文本（blocked、done、working、idle、unknown）；idle 和 unknown 使用状态名，不显示旧状态消息。agent 名称使用主题强调色，状态文本使用更亮的前景色。tab 数量徽标仍按其它 tab 的最高状态着色。点击某个 space 会持续高亮 Agents 面板中属于它的 agent，直到点击其它 space；重复点击同一个 space 不会取消高亮。点击某个 agent 则把关联切换到它所属的 space。当前有焦点的面板对应的 agent 带有绿色激活标记。Agents 面板每项保持三行：第一行是原有 context，第二行 agent 名称，第三行状态文本。排序和交互保持不变。
 
 ## 直接附加到智能体
 

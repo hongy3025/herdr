@@ -1026,3 +1026,76 @@ fn kitty_ctrl_bracket_cancels_a_blocked_foreign_preview() {
     assert_ne!(state.mode, ClientShellMode::Navigate);
     assert!(state.navigate_workspace_id.is_none());
 }
+
+fn click_workspace(state: &mut ClientShellState, column: u16, row: u16) {
+    for kind in [
+        crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
+    ] {
+        state.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(
+            crossterm::event::MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+        )]);
+    }
+}
+
+#[test]
+fn repeated_workspace_click_keeps_the_linked_selection_and_related_agent_highlight() {
+    let mut projected = workspaces(2);
+    let mut focused_agent = agent("omp", crate::api::schema::AgentStatus::Idle, 1);
+    focused_agent.pane_id = "pane_1".into();
+    focused_agent.workspace_id = "ws_1".into();
+    focused_agent.focused = true;
+    let mut other_agent = agent("omp", crate::api::schema::AgentStatus::Idle, 2);
+    other_agent.pane_id = "pane_2".into();
+    other_agent.workspace_id = "ws_2".into();
+    other_agent.focused = false;
+    projected.agents = vec![focused_agent, other_agent];
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 28).unwrap();
+
+    for _ in 0..2 {
+        let rect = workspace_rect(&state, &ClientEndpointId::Local, "ws_2");
+        click_workspace(&mut state, rect.x, rect.y);
+        state.compose(106, 28).unwrap();
+    }
+    let target = state
+        .navigation_target(&ClientEndpointId::Local, "ws_2")
+        .expect("linked target");
+    assert_eq!(state.linked_workspace, Some(target));
+
+    let palette = state.config.palette.clone();
+    let frame = state.compose(106, 28).unwrap().to_ratatui_buffer().unwrap();
+    let selected_row = workspace_rect(&state, &ClientEndpointId::Local, "ws_2");
+    assert_eq!(
+        frame[(selected_row.x, selected_row.y)].bg,
+        palette.active_row_bg
+    );
+    assert_ne!(
+        frame[(selected_row.x, selected_row.y)].bg,
+        palette.selection_bg
+    );
+
+    let agent_rect = |pane_id: &str| {
+        state
+            .hits
+            .agents
+            .iter()
+            .find(|(_, id)| id == pane_id)
+            .map(|(rect, _)| *rect)
+            .expect("visible agent row")
+    };
+    let related = agent_rect("pane_2");
+    assert_eq!(frame[(related.x + 1, related.y)].bg, palette.active_row_bg);
+    let focused = agent_rect("pane_1");
+    assert_eq!(frame[(focused.x + 1, focused.y)].bg, palette.active_row_bg);
+    assert_eq!(frame[(focused.x, focused.y)].symbol(), "▍");
+    assert_eq!(frame[(focused.x, focused.y)].fg, palette.green);
+}

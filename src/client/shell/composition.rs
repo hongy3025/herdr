@@ -84,8 +84,8 @@ impl ClientShellState {
                 .navigate_workspace_id
                 .as_ref()
                 .filter(|_| valid_navigation_target)
-                .or_else(|| pending_workspace_highlight.map(|pending| &pending.target))
-                .or(linked_workspace_highlight),
+                .or_else(|| pending_workspace_highlight.map(|pending| &pending.target)),
+            linked_workspace_id: linked_workspace_highlight,
             reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
@@ -252,8 +252,8 @@ impl ClientShellState {
                     .navigate_workspace_id
                     .as_ref()
                     .filter(|_| valid_navigation_target)
-                    .or_else(|| pending_workspace_highlight.map(|pending| &pending.target))
-                    .or(linked_workspace_highlight),
+                    .or_else(|| pending_workspace_highlight.map(|pending| &pending.target)),
+                linked_workspace_id: linked_workspace_highlight,
                 reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
                 dragged_workspace_id,
                 workspace_drop_indicator_row,

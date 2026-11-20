@@ -97,12 +97,14 @@ pub(crate) fn render_collapsed_sidebar(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
-    selected_workspace_id: Option<&str>,
+    selected_workspace_id: Option<&WorkspaceNavigationTarget>,
+    linked_workspace_id: Option<&WorkspaceNavigationTarget>,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
     let selection_background = workspace_selection_background(palette);
     let active_background = workspace_active_background(palette, selected_workspace_id.is_some());
+    let related_workspace_id = selected_workspace_id.or(linked_workspace_id);
     render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) = collapsed_sidebar_sections(area);
     for (index, workspace) in snapshot
@@ -117,10 +119,14 @@ pub(crate) fn render_collapsed_sidebar(
             workspace_area.width,
             1,
         );
-        let selected = selected_workspace_id == Some(workspace.workspace_id.as_str());
+        let matches_workspace = |target: &WorkspaceNavigationTarget| {
+            target.matches(&ClientEndpointId::Local, &workspace.workspace_id)
+        };
+        let selected = selected_workspace_id.is_some_and(matches_workspace);
+        let linked = linked_workspace_id.is_some_and(matches_workspace);
         if selected {
             buffer.set_style(rect, Style::default().bg(selection_background));
-        } else if workspace.focused {
+        } else if workspace.focused || linked {
             buffer.set_style(rect, Style::default().bg(active_background));
         }
         let number_style = if selected {
@@ -193,7 +199,9 @@ pub(crate) fn render_collapsed_sidebar(
             detail_content.width,
             1,
         );
-        if agent.focused {
+        let related = related_workspace_id
+            .is_some_and(|target| target.matches(&ClientEndpointId::Local, &agent.workspace_id));
+        if agent.focused || related {
             buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
         }
         put_text(
@@ -367,16 +375,27 @@ pub(crate) fn render_sidebar(
             break;
         }
         let rect = Rect::new(body.x, y, content_width, row_height);
-        let selected = state.selected_workspace_id.is_some_and(|target| {
+        let matches_workspace = |target: &WorkspaceNavigationTarget| {
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
-        });
+        };
+        let selected = state.selected_workspace_id.is_some_and(matches_workspace);
+        let linked = state.linked_workspace_id.is_some_and(matches_workspace);
         let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
         if selected {
-            buffer.set_style(rect, Style::default().bg(palette.selection_bg));
+            buffer.set_style(
+                rect,
+                Style::default().bg(workspace_selection_background(palette)),
+            );
         } else if dragged {
             buffer.set_style(rect, Style::default().bg(palette.surface1));
-        } else if workspace.focused {
-            buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+        } else if workspace.focused || linked {
+            buffer.set_style(
+                rect,
+                Style::default().bg(workspace_active_background(
+                    palette,
+                    state.selected_workspace_id.is_some(),
+                )),
+            );
         }
         let mut widgets = SpaceRowWidgets::default();
         render_workspace_rows(
@@ -389,6 +408,7 @@ pub(crate) fn render_sidebar(
                 rows,
                 focused: workspace.focused,
                 selected,
+                linked,
                 navigating: state.selected_workspace_id.is_some(),
                 dragged,
                 palette,
@@ -514,7 +534,7 @@ pub(crate) fn render_sidebar(
         detail_area,
         snapshot,
         config,
-        state.selected_workspace_id,
+        state.selected_workspace_id.or(state.linked_workspace_id),
         state.agent_scroll,
         hits,
     );
@@ -776,6 +796,7 @@ pub(in crate::client::shell) struct SpaceRowRender<'a> {
     pub rows: Vec<Vec<crate::ui::ResolvedToken>>,
     pub focused: bool,
     pub selected: bool,
+    pub linked: bool,
     pub navigating: bool,
     pub dragged: bool,
     pub palette: &'a Palette,
@@ -798,6 +819,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         rows,
         focused,
         selected,
+        linked,
         navigating,
         dragged,
         palette,
@@ -981,7 +1003,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         Some(workspace_selection_background(palette))
     } else if dragged {
         Some(palette.surface1)
-    } else if focused {
+    } else if focused || linked {
         Some(workspace_active_background(palette, navigating))
     } else {
         None
